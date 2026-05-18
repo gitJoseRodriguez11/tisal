@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS sucursales (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(255) NOT NULL,
+  direccion VARCHAR(500),
+  horario VARCHAR(255),
+  telefono VARCHAR(100),
+  servicios TEXT,
+  embedding LONGTEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

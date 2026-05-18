@@ -1,0 +1,24 @@
+{
+  "sucursales": [
+    {
+      "nombre": "Sucursal Puente Alto",
+      "direccion": "Concha y Toro 450",
+      "horario": "08:30 a 17:30",
+      "telefono": "+56911111111",
+      "servicios": [
+        "Envíos express",
+        "Retiro en tienda"
+      ]
+    },
+    {
+      "nombre": "Sucursal Santiago Centro",
+      "direccion": "Alameda 123",
+      "horario": "09:00 a 18:00",
+      "telefono": "+56922222222",
+      "servicios": [
+        "Envíos nacionales",
+        "Pago de encomiendas"
+      ]
+    }
+  ]
+}
