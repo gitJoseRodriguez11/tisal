@@ -2,24 +2,17 @@ package com.tisal.ia.azure;
 
 import com.azure.ai.openai.OpenAIClient;
 import com.azure.ai.openai.OpenAIClientBuilder;
-import com.azure.ai.openai.models.ChatChoice;
-import com.azure.ai.openai.models.ChatCompletions;
-import com.azure.ai.openai.models.ChatCompletionsOptions;
-import com.azure.ai.openai.models.ChatRequestMessage;
-import com.azure.ai.openai.models.ChatRequestSystemMessage;
-import com.azure.ai.openai.models.ChatRequestUserMessage;
+import com.azure.ai.openai.models.*;
 import com.azure.core.credential.AzureKeyCredential;
-import com.tisal.ia.sucursales.SucursalService;
+import com.tisal.ia.sucursales.ConsumoResponse;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.StringJoiner;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.*;
 
 @Service
 public class AzureAiService {
@@ -28,13 +21,11 @@ public class AzureAiService {
 
     private final AzureAiProperties properties;
     private final OpenAIClient openAIClient;
-    private final SucursalService sucursalService;
-    private final List<TrainingExample> trainingExamples = new CopyOnWriteArrayList<>();
+    private final JdbcTemplate jdbcTemplate;
 
-    public AzureAiService(AzureAiProperties properties, SucursalService sucursalService) {
-
+    public AzureAiService(AzureAiProperties properties, JdbcTemplate jdbcTemplate) {
         this.properties = properties;
-        this.sucursalService = sucursalService;
+        this.jdbcTemplate = jdbcTemplate;
 
         this.openAIClient = new OpenAIClientBuilder()
                 .credential(new AzureKeyCredential(properties.getApiKey()))
@@ -42,242 +33,159 @@ public class AzureAiService {
                 .buildClient();
     }
 
+    // Chat completions
     public String query(String prompt) {
-
         if (!StringUtils.hasText(prompt)) {
             throw new IllegalArgumentException("El prompt es obligatorio.");
         }
-
         validateConfiguration();
 
-        logger.info("Ejecutando query de Azure AI con prompt de longitud {}", prompt.length());
+        ChatRequestMessage systemMessage = new ChatRequestSystemMessage(properties.getSystemPrompt());
+        ChatRequestMessage userMessage = new ChatRequestUserMessage(prompt);
 
-        String fullPrompt = buildPrompt(prompt);
-
-        ChatRequestMessage systemMessage =
-                new ChatRequestSystemMessage(properties.getSystemPrompt());
-
-        ChatRequestMessage userMessage =
-                new ChatRequestUserMessage(fullPrompt);
-
-        ChatCompletionsOptions options = new ChatCompletionsOptions(
-                List.of(systemMessage, userMessage)
-        )
+        ChatCompletionsOptions options = new ChatCompletionsOptions(List.of(systemMessage, userMessage))
                 .setMaxTokens(900)
                 .setTemperature(0.7);
 
-        ChatCompletions response =
-                openAIClient.getChatCompletions(
-                        properties.getDeploymentName(),
-                        options
-                );
-
+        ChatCompletions response = openAIClient.getChatCompletions(properties.getDeploymentName(), options);
         List<ChatChoice> choices = response.getChoices();
 
         if (choices == null || choices.isEmpty()) {
-            throw new IllegalStateException(
-                    "Respuesta inesperada de Azure OpenAI: respuesta vacía."
-            );
+            throw new IllegalStateException("Respuesta inesperada de Azure OpenAI: respuesta vacía.");
         }
+        
+     // --- Log de consumo ---
+        CompletionsUsage usage = response.getUsage();
+        logger.info("Consumo Azure OpenAI -> promptTokens={}, completionTokens={}, totalTokens={}",
+                usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens());
 
-        String content = choices.get(0).getMessage().getContent();
-
-        logger.info(
-                "Respuesta recibida de Azure AI con longitud {}",
-                content != null ? content.length() : 0
-        );
-
-        return content != null ? content : "";
+        return choices.get(0).getMessage().getContent();
     }
 
-    public String ping() {
-
+    // Generar embeddings y devolver vector
+    public List<Float> generarEmbeddings(String texto) {
+        if (!StringUtils.hasText(texto)) {
+            throw new IllegalArgumentException("El texto para embeddings es obligatorio.");
+        }
         validateConfiguration();
 
-        logger.info("Ejecutando ping a Azure OpenAI");
+        EmbeddingsOptions options = new EmbeddingsOptions(List.of(texto));
+        Embeddings embeddings = openAIClient.getEmbeddings(properties.getEmbeddingDeployment(), options);
 
-        ChatRequestMessage systemMessage =
-                new ChatRequestSystemMessage(properties.getSystemPrompt());
+        return embeddings.getData().get(0).getEmbedding();
+    }
 
-        ChatRequestMessage userMessage =
-                new ChatRequestUserMessage("Ping");
+    public void guardarSucursal(String nombre, String direccion, String horario, String telefono) {
+        List<Float> vector = generarEmbeddings(nombre); // embeddings basados en el nombre
+        String vectorJson = vector.toString(); // formato "[0.123, 0.456, ...]"
 
-        ChatCompletionsOptions options = new ChatCompletionsOptions(
-                List.of(systemMessage, userMessage)
-        )
-                .setMaxTokens(10)
-                .setTemperature(0.0);
+        String sql = "INSERT INTO sucursales (nombre, direccion, horario, telefono, embedding) " +
+                     "VALUES (?, ?, ?, ?, CAST(? AS vector))";
 
+        jdbcTemplate.update(sql, nombre, direccion, horario, telefono, vectorJson);
+
+        logger.info("Sucursal '{}' guardada con embedding de {} dimensiones.", nombre, vector.size());
+    }
+    
+    
+    public void guardarEspecialidad(String nombre) {
+        List<Float> vector = generarEmbeddings(nombre);
+        String vectorJson = vector.toString();
+
+        String sql = "INSERT INTO especialidades (nombre, embedding) VALUES (?, CAST(? AS vector))";
+        jdbcTemplate.update(sql, nombre, vectorJson);
+
+        logger.info("Especialidad '{}' guardada con embedding de {} dimensiones.", nombre, vector.size());
+    }
+    
+    public void guardarDoctor(String nombre, Long especialidadId, Long sucursalId) {
+        List<Float> vector = generarEmbeddings(nombre);
+        String vectorJson = vector.toString();
+
+        String sql = "INSERT INTO doctores (nombre, especialidad_id, sucursal_id, embedding) " +
+                "VALUES (?, ?, ?, CAST(? AS vector))";
+        jdbcTemplate.update(sql, nombre, especialidadId, sucursalId, vectorJson);
+
+        logger.info("Doctor '{}' guardado con embedding de {} dimensiones.", nombre, vector.size());
+    }
+
+
+
+    // Buscar similares en Oracle
+    public List<Map<String,Object>> buscarSimilares(String texto) {
+        List<Float> vector = generarEmbeddings(texto);
+        String vectorJson = vector.toString();
+
+        String sql = """
+            SELECT id, nombre
+            FROM sucursales
+            ORDER BY embedding <-> TO_VECTOR(?)
+            FETCH FIRST 5 ROWS ONLY
+        """;
+
+        return jdbcTemplate.queryForList(sql, vectorJson);
+    }
+
+    // Helpers
+    private void validateConfiguration() {
+        if (!StringUtils.hasText(properties.getEndpoint())
+                || !StringUtils.hasText(properties.getApiKey())
+                || !StringUtils.hasText(properties.getDeploymentName())
+                || !StringUtils.hasText(properties.getEmbeddingDeployment())) {
+            throw new IllegalStateException("Configure endpoint, api-key, deployment-name y embedding-deployment en application.properties.");
+        }
+    }
+
+    private String trimSlash(String endpoint) {
+        if (endpoint == null) return "";
+        return endpoint.endsWith("/") ? endpoint.substring(0, endpoint.length() - 1) : endpoint;
+    }
+    
+ // Ping de prueba a Azure OpenAI
+    public String ping() {
+        validateConfiguration();
         try {
+            ChatRequestMessage systemMessage = new ChatRequestSystemMessage(properties.getSystemPrompt());
+            ChatRequestMessage userMessage = new ChatRequestUserMessage("Ping");
 
-            ChatCompletions response =
-                    openAIClient.getChatCompletions(
-                            properties.getDeploymentName(),
-                            options
-                    );
+            ChatCompletionsOptions options = new ChatCompletionsOptions(List.of(systemMessage, userMessage))
+                    .setMaxTokens(10)
+                    .setTemperature(0.0);
 
+            ChatCompletions response = openAIClient.getChatCompletions(properties.getDeploymentName(), options);
             List<ChatChoice> choices = response.getChoices();
 
             if (choices == null || choices.isEmpty()) {
                 return "No response choices returned from Azure.";
             }
-
-            String content = choices.get(0).getMessage().getContent();
-
-            return content != null ? content : "";
-
+            return choices.get(0).getMessage().getContent();
         } catch (Exception e) {
-
             logger.error("Ping a Azure falló: {}", e.getMessage(), e);
-
             return "ERROR: " + e.getMessage();
         }
     }
+    
+    public ConsumoResponse obtenerConsumo(String prompt) {
+        validateConfiguration();
 
-    public TrainingResult train(String exampleInput, String exampleOutput) {
+        ChatRequestMessage systemMessage = new ChatRequestSystemMessage(properties.getSystemPrompt());
+        ChatRequestMessage userMessage = new ChatRequestUserMessage(prompt);
 
-        if (!StringUtils.hasText(exampleInput)
-                || !StringUtils.hasText(exampleOutput)) {
+        ChatCompletionsOptions options = new ChatCompletionsOptions(List.of(systemMessage, userMessage))
+                .setMaxTokens(900)
+                .setTemperature(0.7);
 
-            throw new IllegalArgumentException(
-                    "El ejemplo de entrenamiento requiere input y output."
-            );
-        }
+        ChatCompletions response = openAIClient.getChatCompletions(properties.getDeploymentName(), options);
 
-        TrainingExample example =
-                new TrainingExample(
-                        exampleInput.trim(),
-                        exampleOutput.trim()
-                );
+        CompletionsUsage usage = response.getUsage(); // aquí sí funciona
 
-        trainingExamples.add(example);
+        ConsumoResponse consumo = new ConsumoResponse();
+        consumo.setPromptTokens(usage.getPromptTokens());
+        consumo.setCompletionTokens(usage.getCompletionTokens());
+        consumo.setTotalTokens(usage.getTotalTokens());
 
-        logger.info(
-                "Nuevo ejemplo de entrenamiento agregado. Total ejemplos: {}",
-                trainingExamples.size()
-        );
-
-        return new TrainingResult(
-                "Ejemplo de entrenamiento guardado.",
-                trainingExamples.size()
-        );
+        return consumo;
     }
 
-    public TrainingResult clearTrainingExamples() {
-
-        int removed = trainingExamples.size();
-
-        trainingExamples.clear();
-
-        logger.info("Se eliminaron {} ejemplos de entrenamiento", removed);
-
-        return new TrainingResult(
-                "Se eliminaron los ejemplos de entrenamiento.",
-                removed
-        );
-    }
-
-    public List<TrainingExample> getTrainingExamples() {
-
-        return Collections.unmodifiableList(
-                new ArrayList<>(trainingExamples)
-        );
-    }
-
-    private void validateConfiguration() {
-
-        if (!StringUtils.hasText(properties.getEndpoint())
-                || !StringUtils.hasText(properties.getApiKey())
-                || !StringUtils.hasText(properties.getDeploymentName())) {
-
-            throw new IllegalStateException(
-                    "Configure azure.ai.openai.endpoint, " +
-                    "azure.ai.openai.api-key y " +
-                    "azure.ai.openai.deployment-name " +
-                    "en application.properties."
-            );
-        }
-    }
-
-    private String buildPrompt(String prompt) {
-
-        StringBuilder builder = new StringBuilder();
-        String branchReference = sucursalService.buildBranchReference(prompt);
-
-        if (!branchReference.isBlank()) {
-            builder.append(branchReference).append("\n\n");
-        }
-
-        if (trainingExamples.isEmpty()) {
-            builder.append(prompt);
-        } else {
-            StringJoiner joiner = new StringJoiner("\n\n");
-            joiner.add("Utiliza estos ejemplos de entrenamiento para responder mejor:");
-
-            int index = 1;
-            for (TrainingExample example : trainingExamples) {
-                joiner.add(String.format(
-                        "Ejemplo %d:\nPregunta: %s\nRespuesta: %s",
-                        index++,
-                        example.input(),
-                        example.output()
-                ));
-            }
-
-            joiner.add("Usuario: " + prompt);
-            builder.append(joiner.toString());
-        }
-
-        return builder.toString();
-    }
-
-    private String trimSlash(String endpoint) {
-
-        if (endpoint == null) {
-            return "";
-        }
-
-        return endpoint.endsWith("/")
-                ? endpoint.substring(0, endpoint.length() - 1)
-                : endpoint;
-    }
-
-    public static final class TrainingExample {
-
-        private final String input;
-        private final String output;
-
-        public TrainingExample(String input, String output) {
-            this.input = input;
-            this.output = output;
-        }
-
-        public String input() {
-            return input;
-        }
-
-        public String output() {
-            return output;
-        }
-    }
-
-    public static final class TrainingResult {
-
-        private final String message;
-        private final int totalExamples;
-
-        public TrainingResult(String message, int totalExamples) {
-            this.message = message;
-            this.totalExamples = totalExamples;
-        }
-
-        public String getMessage() {
-            return message;
-        }
-
-        public int getTotalExamples() {
-            return totalExamples;
-        }
-    }
 
 }

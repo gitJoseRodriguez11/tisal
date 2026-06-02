@@ -10,7 +10,6 @@ import jakarta.persistence.Table;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
-
 @Entity
 @Table(name = "sucursales")
 public class SucursalEntity {
@@ -24,62 +23,32 @@ public class SucursalEntity {
     private String horario;
     private String telefono;
 
-    @Column(columnDefinition = "TEXT")
-    private String servicios;
-
-    @Column(columnDefinition = "LONGTEXT")
+    @Column(columnDefinition = "vector(1536)")
     private String embedding;
 
-    protected SucursalEntity() {
-    }
+    // Constructor vacío para JPA
+    public SucursalEntity() {}
 
-    public SucursalEntity(String nombre, String direccion, String horario, String telefono, String servicios) {
+    // Constructor con datos completos
+    public SucursalEntity(String nombre, String direccion, String horario, String telefono) {
         this.nombre = nombre;
         this.direccion = direccion;
         this.horario = horario;
         this.telefono = telefono;
-        this.servicios = servicios;
     }
 
-    public Long getId() {
-        return id;
+    // 👇 Constructor con id (para relaciones en controladores)
+    public SucursalEntity(Long id) {
+        this.id = id;
     }
 
-    public String getNombre() {
-        return nombre;
-    }
+    // Getters y setters
+    public Long getId() { return id; }
+    public String getNombre() { return nombre; }
+    public String getDireccion() { return direccion; }
+    public String getHorario() { return horario; }
+    public String getTelefono() { return telefono; }
 
-    public String getDireccion() {
-        return direccion;
-    }
-
-    public String getHorario() {
-        return horario;
-    }
-
-    public String getTelefono() {
-        return telefono;
-    }
-
-    public String getServicios() {
-        return servicios;
-    }
-
-    public String getEmbedding() {
-        return embedding;
-    }
-
-    public void setEmbedding(String embedding) {
-        this.embedding = embedding;
-    }
-
-    public List<String> getServiciosList() {
-        if (servicios == null || servicios.isBlank()) {
-            return List.of();
-        }
-        return Arrays.stream(servicios.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toList());
-    }
+    public String getEmbedding() { return embedding; }
+    public void setEmbedding(String embedding) { this.embedding = embedding; }
 }
