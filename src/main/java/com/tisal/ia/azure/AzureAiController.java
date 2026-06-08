@@ -813,9 +813,50 @@ public class AzureAiController {
         boolean disponible = disp.stream().anyMatch(h -> h.getHora().equals(hora));
         
         if (!disponible) {
+            state.setConfirmacionPendiente(false);
+            state.setOpcionSeleccionada(null);
             state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_DOCTOR);
             return "⚠️ Lo siento, ese doctor no tiene disponibilidad a esa hora.\n\n" +
                    "Por favor, elige otro doctor o ajusta la hora.";
+        }
+
+        // Primera entrada al paso 6: mostrar resumen y pedir confirmación explícita
+        if (!state.isConfirmacionPendiente()) {
+            state.setConfirmacionPendiente(true);
+            state.setOpcionSeleccionada(null);
+
+            return "📋 Resumen de tu cita:\n\n" +
+                   "  Paciente: " + pacienteOpt.get().getNombre() + "\n" +
+                   "  Doctor: Dr. " + doctor.getNombre() + "\n" +
+                   "  Especialidad: " + doctor.getEspecialidad().getNombre() + "\n" +
+                   "  Sucursal: " + doctor.getSucursal().getNombre() + "\n" +
+                   "  Fecha: " + state.getFechaSolicitada().toLocalDate() + "\n" +
+                   "  Hora: " + hora + "\n\n" +
+                   "Por favor confirma la acción:\n" +
+                   "1. Confirmar cita\n" +
+                   "2. Cancelar";
+        }
+
+        // Segunda entrada al paso 6: procesar selección 1 (confirmar) o 2 (cancelar)
+        Integer opcion = state.getOpcionSeleccionada();
+        if (opcion == null) {
+            return "Por favor, selecciona una opción:\n" +
+                   "1. Confirmar cita\n" +
+                   "2. Cancelar";
+        }
+
+        if (opcion == 2) {
+            state.setConfirmacionPendiente(false);
+            state.setOpcionSeleccionada(null);
+            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.COMPLETADA);
+            return "❌ Agendamiento cancelado. No se registró ninguna cita.";
+        }
+
+        if (opcion != 1) {
+            state.setOpcionSeleccionada(null);
+            return "⚠️ Opción inválida. Por favor selecciona:\n" +
+                   "1. Confirmar cita\n" +
+                   "2. Cancelar";
         }
         
         // ✅ CREAR CITA
@@ -827,6 +868,8 @@ public class AzureAiController {
         citaRepository.save(cita);
         
         // Marcar como completada
+        state.setConfirmacionPendiente(false);
+        state.setOpcionSeleccionada(null);
         state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.COMPLETADA);
         
         return "✅ ¡Cita agendada exitosamente!\n\n" +
