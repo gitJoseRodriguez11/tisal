@@ -83,6 +83,15 @@ public class AzureAiService {
             3. Decidir la próxima acción de forma estructurada
             4. SIEMPRE responde en JSON válido con la estructura especificada
             
+            REGLAS PARA DETECTAR INTENCIÓN:
+            - AGENDAR_CITA: El usuario quiere agendar/reservar una cita (palabras clave: agendar, reservar, programar cita)
+            - BUSCAR_DISPONIBILIDAD: El usuario pregunta por horarios/disponibilidad (palabras clave: disponibilidad, horario, cuándo, qué hora, próximo turno)
+            - CONSULTAR_SUCURSALES: El usuario pregunta por sucursales/ubicaciones SIN mencionar disponibilidad (palabras clave: sucursal, dónde, ubicación, dirección)
+            - CONSULTAR_DOCTORES: El usuario pregunta por doctores/médicos SIN mencionar horarios (palabras clave: doctor, médico, doctor especialista)
+            - CONSULTAR_ESPECIALIDADES: El usuario pregunta qué especialidades hay
+            - CONSULTAR_INFORMACION: El usuario hace preguntas generales sobre la clínica
+            - CANCELAR_CITA: El usuario quiere cancelar una cita existente
+            
             Responde EXACTAMENTE en este formato JSON:
             {
                 "intent": "CONSULTAR_INFORMACION|AGENDAR_CITA|BUSCAR_DISPONIBILIDAD|CONSULTAR_SUCURSALES|CONSULTAR_DOCTORES|CONSULTAR_ESPECIALIDADES|CANCELAR_CITA|DESCONOCIDA",

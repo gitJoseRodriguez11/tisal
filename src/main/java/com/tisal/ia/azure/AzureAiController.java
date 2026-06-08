@@ -432,21 +432,38 @@ public class AzureAiController {
     private String manejarBuscarDisponibilidad(AzureAiStructuredResponse aiResponse, ConversationState state) {
         StringBuilder resultado = new StringBuilder("📅 Disponibilidades encontradas:\n\n");
         
-        // Buscar doctores según especialidad o nombre
+        // Buscar doctores según especialidad, nombre, o usar embeddings como fallback
         List<DoctorEntity> doctores = new java.util.ArrayList<>();
         
-        if (state.getEspecialidadBuscada() != null) {
+        if (state.getEspecialidadBuscada() != null && !state.getEspecialidadBuscada().trim().isEmpty()) {
+            // Buscar por especialidad exacta
             Optional<EspecialidadEntity> espec = especialidadRepository.findByNombre(state.getEspecialidadBuscada());
             if (espec.isPresent()) {
                 doctores = doctorRepository.findByEspecialidad(espec.get());
             }
-        } else if (state.getDoctorNombre() != null) {
+        } else if (state.getDoctorNombre() != null && !state.getDoctorNombre().trim().isEmpty()) {
+            // Buscar por doctor exacto
             Optional<DoctorEntity> doc = doctorRepository.findByNombre(state.getDoctorNombre());
             if (doc.isPresent()) doctores.add(doc.get());
         }
         
+        // Si no encontró nada, usar embeddings como fallback
         if (doctores.isEmpty()) {
-            return "❌ No encontré doctores con esos criterios.";
+            String textoBusqueda = state.getEspecialidadBuscada();
+            if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+                textoBusqueda = state.getSucursalBuscada();
+            }
+            if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+                textoBusqueda = "doctor disponible";
+            }
+            
+            List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
+            String vectorJson = vector.toString();
+            doctores = doctorRepository.buscarPorVector(vectorJson);
+        }
+        
+        if (doctores.isEmpty()) {
+            return "❌ No encontré doctores disponibles con esos criterios. Intenta especificando una especialidad.";
         }
         
         for (DoctorEntity d : doctores) {
