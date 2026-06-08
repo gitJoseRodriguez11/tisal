@@ -1,6 +1,7 @@
 package com.tisal.ia.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -14,6 +15,9 @@ public interface EspecialidadRepository  extends JpaRepository<EspecialidadEntit
 
 	// Búsqueda simple por nombre
     List<EspecialidadEntity> findByNombreContainingIgnoreCase(String nombre);
+    
+    // Búsqueda exacta por nombre
+    Optional<EspecialidadEntity> findByNombre(String nombre);
 
     // Búsqueda semántica usando embeddings en PostgreSQL + pgvector
     @Query(value = """

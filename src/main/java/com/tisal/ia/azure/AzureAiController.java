@@ -14,6 +14,8 @@ import com.tisal.ia.ReqModel.DisponibilidadRequest;
 import com.tisal.ia.ReqModel.DoctorRequest;
 import com.tisal.ia.ReqModel.EspecialidadReqModel;
 import com.tisal.ia.ReqModel.FechaParser;
+import com.tisal.ia.ReqModel.ConversationState;
+import com.tisal.ia.ReqModel.AzureAiStructuredResponse;
 import com.tisal.ia.modelEntity.CitaEntity;
 import com.tisal.ia.modelEntity.ConversacionEntity;
 import com.tisal.ia.modelEntity.DisponibilidadEntity;
@@ -243,6 +245,341 @@ public class AzureAiController {
         return respuestaIA;
     }
 
+    
+    /**
+     * 🆕 NUEVO ENDPOINT: queryWithDataV2 - Versión mejorada con máquina de estados y respuestas estructuradas
+     * 
+     * Flujo:
+     * 1. Azure analiza la intención del usuario y devuelve JSON estructurado
+     * 2. El sistema ejecuta acciones basadas en la intención y fase
+     * 3. Se mantiene estado de conversación entre turnos
+     * 4. Sin regex frágil - todo basado en JSON de Azure
+     */
+    @PostMapping("/queryWithDataV2")
+    public String queryWithDataV2(@RequestBody PromptRequest request) {
+        // 1. Recuperar o crear estado de la conversación
+        ConversationState state = new ConversationState(request.getSessionId());
+        state.setTurnNumber(state.getTurnNumber() + 1);
+        
+        // 2. Construir historial de conversación
+        StringBuilder conversationHistory = new StringBuilder();
+        List<ConversacionEntity> historial = conversacionRepository
+            .findBySessionIdOrderByTimestampAsc(request.getSessionId());
+        
+        for (ConversacionEntity c : historial) {
+            conversationHistory.append("Usuario: ").append(c.getMensajeUsuario()).append("\n");
+            if (c.getRespuestaIa() != null) {
+                conversationHistory.append("IA: ").append(c.getRespuestaIa()).append("\n");
+            }
+        }
+        
+        // 3. LLAMAR A AZURE CON RESPUESTA ESTRUCTURADA
+        AzureAiStructuredResponse aiResponse = azureAiService.queryWithStructuredResponse(
+            request.getPrompt(), 
+            conversationHistory.toString()
+        );
+        
+        // 4. Extraer datos del JSON
+        if (aiResponse.getExtractedData() != null) {
+            if (aiResponse.getExtractedData().getRut() != null) {
+                state.setPacienteRut(aiResponse.getExtractedData().getRut());
+            }
+            if (aiResponse.getExtractedData().getDoctorName() != null) {
+                state.setDoctorNombre(aiResponse.getExtractedData().getDoctorName());
+            }
+            if (aiResponse.getExtractedData().getSpecialty() != null) {
+                state.setEspecialidadBuscada(aiResponse.getExtractedData().getSpecialty());
+            }
+            if (aiResponse.getExtractedData().getBranch() != null) {
+                state.setSucursalBuscada(aiResponse.getExtractedData().getBranch());
+            }
+            if (aiResponse.getExtractedData().getDate() != null) {
+                try {
+                    state.setFechaSolicitada(LocalDateTime.parse(aiResponse.getExtractedData().getDate().replace("Z", "")));
+                } catch (Exception e) {
+                    state.setFechaSolicitada(FechaParser.parse(request.getPrompt()));
+                }
+            }
+            if (aiResponse.getExtractedData().getTime() != null) {
+                state.setHoraStr(aiResponse.getExtractedData().getTime());
+            }
+        }
+        
+        // 5. MÁQUINA DE ESTADOS: Ejecutar acción basada en intención
+        String respuestaFinal = manejarIntention(aiResponse, state, request.getSessionId());
+        
+        // 6. Guardar en historial
+        ConversacionEntity conv = new ConversacionEntity();
+        conv.setSessionId(request.getSessionId());
+        conv.setMensajeUsuario(request.getPrompt());
+        conv.setRespuestaIa(respuestaFinal);
+        conv.setTimestamp(LocalDateTime.now());
+        conversacionRepository.save(conv);
+        
+        return respuestaFinal;
+    }
+    
+    /**
+     * Máquina de estados: Ejecuta la acción recomendada por Azure
+     */
+    private String manejarIntention(AzureAiStructuredResponse aiResponse, ConversationState state, String sessionId) {
+        String intent = aiResponse.getIntent();
+        String nextAction = aiResponse.getNextAction();
+        
+        try {
+            switch (intent) {
+                case "AGENDAR_CITA":
+                    return manejarAgendarCita(aiResponse, state);
+                    
+                case "BUSCAR_DISPONIBILIDAD":
+                    return manejarBuscarDisponibilidad(aiResponse, state);
+                    
+                case "CONSULTAR_SUCURSALES":
+                    return manejarBuscarSucursales(aiResponse, state);
+                    
+                case "CONSULTAR_DOCTORES":
+                    return manejarBuscarDoctores(aiResponse, state);
+                    
+                case "CONSULTAR_ESPECIALIDADES":
+                    return manejarBuscarEspecialidades(aiResponse, state);
+                    
+                case "CONSULTAR_INFORMACION":
+                    return manejarConsultaGeneralObtenerDatos(aiResponse, state);
+                    
+                case "CANCELAR_CITA":
+                    return manejarCancelarCita(aiResponse, state);
+                    
+                default:
+                    // Si no entiende, devolver respuesta de Azure
+                    return aiResponse.getResponseMessage();
+            }
+        } catch (Exception e) {
+            return "❌ Error procesando tu solicitud: " + e.getMessage();
+        }
+    }
+    
+    /**
+     * Acción: Agendar Cita
+     */
+    private String manejarAgendarCita(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        // Validar datos necesarios
+        if (state.getPacienteRut() == null) {
+            return "⚠️ Por favor proporciona tu RUT para agendar la cita.";
+        }
+        if (state.getDoctorNombre() == null || state.getFechaSolicitada() == null || state.getHoraStr() == null) {
+            return "⚠️ Necesito: doctor, fecha y hora. " + aiResponse.getResponseMessage();
+        }
+        
+        // Buscar paciente
+        Optional<PacienteEntity> pacienteOpt = pacienteRepository.findByRut(state.getPacienteRut());
+        if (pacienteOpt.isEmpty()) {
+            return "⚠️ El RUT " + state.getPacienteRut() + " no está registrado. ¿Quieres ingresarlo?";
+        }
+        
+        // Buscar doctor
+        Optional<DoctorEntity> doctorOpt = doctorRepository.findByNombre(state.getDoctorNombre());
+        if (doctorOpt.isEmpty()) {
+            return "⚠️ Doctor '" + state.getDoctorNombre() + "' no encontrado.";
+        }
+        
+        DoctorEntity doctor = doctorOpt.get();
+        LocalTime hora = LocalTime.parse(state.getHoraStr());
+        
+        // Verificar disponibilidad
+        List<DisponibilidadEntity> disp = disponibilidadRepository
+            .findByDoctorAndDiaSemanaAndEstado(
+                doctor, 
+                state.getFechaSolicitada().getDayOfWeek().getValue(), 
+                "DISPONIBLE"
+            );
+        
+        boolean disponible = disp.stream().anyMatch(h -> h.getHora().equals(hora));
+        
+        if (!disponible) {
+            return "⚠️ El Dr. " + doctor.getNombre() + " no tiene disponibilidad a esa hora.";
+        }
+        
+        // CREAR CITA
+        CitaEntity cita = new CitaEntity();
+        cita.setPaciente(pacienteOpt.get());
+        cita.setDoctor(doctor);
+        cita.setFecha(state.getFechaSolicitada().withHour(hora.getHour()).withMinute(hora.getMinute()));
+        cita.setEstado("confirmada");
+        citaRepository.save(cita);
+        
+        return "✅ Cita agendada exitosamente!\n" +
+               "Doctor: " + doctor.getNombre() + "\n" +
+               "Especialidad: " + doctor.getEspecialidad().getNombre() + "\n" +
+               "Fecha: " + state.getFechaSolicitada().toLocalDate() + "\n" +
+               "Hora: " + hora + "\n" +
+               "Sucursal: " + doctor.getSucursal().getNombre();
+    }
+    
+    /**
+     * Acción: Buscar Disponibilidad
+     */
+    private String manejarBuscarDisponibilidad(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        StringBuilder resultado = new StringBuilder("📅 Disponibilidades encontradas:\n\n");
+        
+        // Buscar doctores según especialidad o nombre
+        List<DoctorEntity> doctores = new java.util.ArrayList<>();
+        
+        if (state.getEspecialidadBuscada() != null) {
+            Optional<EspecialidadEntity> espec = especialidadRepository.findByNombre(state.getEspecialidadBuscada());
+            if (espec.isPresent()) {
+                doctores = doctorRepository.findByEspecialidad(espec.get());
+            }
+        } else if (state.getDoctorNombre() != null) {
+            Optional<DoctorEntity> doc = doctorRepository.findByNombre(state.getDoctorNombre());
+            if (doc.isPresent()) doctores.add(doc.get());
+        }
+        
+        if (doctores.isEmpty()) {
+            return "❌ No encontré doctores con esos criterios.";
+        }
+        
+        for (DoctorEntity d : doctores) {
+            resultado.append("🏥 Dr. ").append(d.getNombre())
+                    .append(" (").append(d.getEspecialidad().getNombre()).append(")\n");
+            resultado.append("   Sucursal: ").append(d.getSucursal().getNombre()).append("\n");
+            
+            // Mostrar disponibilidad próximos 7 días
+            for (int i = 0; i < 7; i++) {
+                LocalDateTime fecha = LocalDateTime.now().plusDays(i);
+                int dayOfWeek = fecha.getDayOfWeek().getValue();
+                
+                List<DisponibilidadEntity> disp = disponibilidadRepository
+                    .findByDoctorAndDiaSemanaAndEstado(d, dayOfWeek, "DISPONIBLE");
+                
+                if (!disp.isEmpty()) {
+                    resultado.append("   📆 ").append(nombreDia(dayOfWeek))
+                            .append(": ");
+                    disp.forEach(h -> resultado.append(h.getHora()).append(", "));
+                    resultado.append("\n");
+                }
+            }
+            resultado.append("\n");
+        }
+        
+        return resultado.toString();
+    }
+    
+    /**
+     * Acción: Buscar Sucursales
+     */
+    private String manejarBuscarSucursales(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        List<SucursalEntity> sucursales;
+        
+        if (state.getSucursalBuscada() != null) {
+            Optional<SucursalEntity> s = sucursalRepository.findByNombre(state.getSucursalBuscada());
+            sucursales = s.map(java.util.List::of).orElseGet(java.util.List::of);
+        } else {
+            sucursales = (List<SucursalEntity>) sucursalRepository.findAll();
+        }
+        
+        StringBuilder resultado = new StringBuilder("🏥 Sucursales:\n\n");
+        sucursales.forEach(s -> resultado
+                .append("📍 ").append(s.getNombre()).append("\n")
+                .append("   Dirección: ").append(s.getDireccion()).append("\n")
+                .append("   Horario: ").append(s.getHorario()).append("\n")
+                .append("   Teléfono: ").append(s.getTelefono()).append("\n\n"));
+        
+        return resultado.toString();
+    }
+    
+    /**
+     * Acción: Buscar Doctores
+     */
+    private String manejarBuscarDoctores(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        List<DoctorEntity> doctores;
+        
+        if (state.getEspecialidadBuscada() != null) {
+            Optional<EspecialidadEntity> espec = especialidadRepository.findByNombre(state.getEspecialidadBuscada());
+            doctores = espec.map(e -> doctorRepository.findByEspecialidad(e))
+                    .orElseGet(java.util.List::of);
+        } else if (state.getSucursalBuscada() != null) {
+            Optional<SucursalEntity> suc = sucursalRepository.findByNombre(state.getSucursalBuscada());
+            doctores = suc.map(s -> doctorRepository.findBySucursal(s))
+                    .orElseGet(java.util.List::of);
+        } else {
+            doctores = (List<DoctorEntity>) doctorRepository.findAll();
+        }
+        
+        StringBuilder resultado = new StringBuilder("👨‍⚕️ Doctores:\n\n");
+        doctores.forEach(d -> resultado
+                .append("👨‍⚕️ Dr. ").append(d.getNombre()).append("\n")
+                .append("   Especialidad: ").append(d.getEspecialidad().getNombre()).append("\n")
+                .append("   Sucursal: ").append(d.getSucursal().getNombre()).append("\n\n"));
+        
+        return resultado.toString();
+    }
+    
+    /**
+     * Acción: Buscar Especialidades
+     */
+    private String manejarBuscarEspecialidades(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        List<EspecialidadEntity> especialidades = (List<EspecialidadEntity>) especialidadRepository.findAll();
+        
+        StringBuilder resultado = new StringBuilder("🏥 Especialidades disponibles:\n\n");
+        especialidades.forEach(e -> resultado
+                .append("• ").append(e.getNombre()).append("\n"));
+        
+        return resultado.toString();
+    }
+    
+    /**
+     * Acción: Consulta General - Obtener datos relacionados
+     */
+    private String manejarConsultaGeneralObtenerDatos(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        // Generar embeddings de la pregunta
+        List<Float> vector = azureAiService.generarEmbeddings(aiResponse.getResponseMessage());
+        String vectorJson = vector.toString();
+        
+        // Buscar datos relacionados
+        StringBuilder contexto = new StringBuilder();
+        contexto.append("📌 Información relacionada:\n\n");
+        
+        List<SucursalEntity> sucursales = sucursalRepository.buscarPorVector(vectorJson);
+        List<EspecialidadEntity> especialidades = especialidadRepository.buscarPorVector(vectorJson);
+        List<DoctorEntity> doctores = doctorRepository.buscarPorVector(vectorJson);
+        
+        if (!sucursales.isEmpty()) {
+            contexto.append("🏥 Sucursales:\n");
+            sucursales.forEach(s -> contexto.append("  • ").append(s.getNombre()).append("\n"));
+            contexto.append("\n");
+        }
+        if (!especialidades.isEmpty()) {
+            contexto.append("🏥 Especialidades:\n");
+            especialidades.forEach(e -> contexto.append("  • ").append(e.getNombre()).append("\n"));
+            contexto.append("\n");
+        }
+        if (!doctores.isEmpty()) {
+            contexto.append("👨‍⚕️ Doctores:\n");
+            doctores.forEach(d -> contexto.append("  • Dr. ").append(d.getNombre())
+                    .append(" (").append(d.getEspecialidad().getNombre()).append(")\n"));
+        }
+        
+        return contexto.toString() + "\n" + aiResponse.getResponseMessage();
+    }
+    
+    /**
+     * Acción: Cancelar Cita
+     */
+    private String manejarCancelarCita(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        if (state.getPacienteRut() == null) {
+            return "⚠️ Por favor proporciona tu RUT para cancelar una cita.";
+        }
+        
+        Optional<PacienteEntity> pacienteOpt = pacienteRepository.findByRut(state.getPacienteRut());
+        if (pacienteOpt.isEmpty()) {
+            return "❌ Paciente no encontrado.";
+        }
+        
+        // Buscar cita activa del paciente
+        // TODO: Implementar método findActiveCitaByPaciente
+        
+        return "⚠️ Función de cancelación en desarrollo.";
+    }
 
 
 

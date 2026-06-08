@@ -1,0 +1,96 @@
+package com.tisal.ia.ReqModel;
+
+import java.time.LocalDateTime;
+
+/**
+ * Máquina de estados para manejar el flujo de conversación dinámicamente
+ */
+public class ConversationState {
+    
+    public enum Intent {
+        CONSULTAR_INFORMACION,      // El usuario pregunta algo general
+        BUSCAR_DISPONIBILIDAD,      // El usuario busca citas disponibles
+        AGENDAR_CITA,              // El usuario quiere agendar
+        CONSULTAR_SUCURSALES,      // Busca información de sucursales
+        CONSULTAR_DOCTORES,        // Busca información de doctores
+        CONSULTAR_ESPECIALIDADES,  // Busca información de especialidades
+        CANCELAR_CITA,             // Cancela una cita existente
+        DESCONOCIDA                // La IA no entiende la intención
+    }
+    
+    public enum ConversationPhase {
+        INICIO,                    // Primero contacto o sin contexto
+        RECOPILANDO_DATOS,         // Está recolectando información
+        CONFIRMAR_ACCION,          // Pidiendo confirmación
+        EJECUTANDO_ACCION,         // Procesando acción
+        COMPLETADA,                // Acción completada
+        ERROR                      // Hubo un error
+    }
+    
+    private String sessionId;
+    private Intent intent;
+    private ConversationPhase phase;
+    private LocalDateTime timestamp;
+    
+    // Datos extraídos de la conversación
+    private String pacienteRut;
+    private String doctorNombre;
+    private String especialidadBuscada;
+    private String sucursalBuscada;
+    private LocalDateTime fechaSolicitada;
+    private String horaStr;
+    
+    // Metadata
+    private int turnNumber;
+    private boolean confirmacionPendiente;
+    private String ultimaAccion;
+    
+    public ConversationState(String sessionId) {
+        this.sessionId = sessionId;
+        this.intent = Intent.DESCONOCIDA;
+        this.phase = ConversationPhase.INICIO;
+        this.timestamp = LocalDateTime.now();
+        this.turnNumber = 0;
+        this.confirmacionPendiente = false;
+    }
+    
+    // Getters y Setters
+    public String getSessionId() { return sessionId; }
+    public void setSessionId(String sessionId) { this.sessionId = sessionId; }
+    
+    public Intent getIntent() { return intent; }
+    public void setIntent(Intent intent) { this.intent = intent; }
+    
+    public ConversationPhase getPhase() { return phase; }
+    public void setPhase(ConversationPhase phase) { this.phase = phase; }
+    
+    public LocalDateTime getTimestamp() { return timestamp; }
+    public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
+    
+    public String getPacienteRut() { return pacienteRut; }
+    public void setPacienteRut(String pacienteRut) { this.pacienteRut = pacienteRut; }
+    
+    public String getDoctorNombre() { return doctorNombre; }
+    public void setDoctorNombre(String doctorNombre) { this.doctorNombre = doctorNombre; }
+    
+    public String getEspecialidadBuscada() { return especialidadBuscada; }
+    public void setEspecialidadBuscada(String especialidadBuscada) { this.especialidadBuscada = especialidadBuscada; }
+    
+    public String getSucursalBuscada() { return sucursalBuscada; }
+    public void setSucursalBuscada(String sucursalBuscada) { this.sucursalBuscada = sucursalBuscada; }
+    
+    public LocalDateTime getFechaSolicitada() { return fechaSolicitada; }
+    public void setFechaSolicitada(LocalDateTime fechaSolicitada) { this.fechaSolicitada = fechaSolicitada; }
+    
+    public String getHoraStr() { return horaStr; }
+    public void setHoraStr(String horaStr) { this.horaStr = horaStr; }
+    
+    public int getTurnNumber() { return turnNumber; }
+    public void setTurnNumber(int turnNumber) { this.turnNumber = turnNumber; }
+    
+    public boolean isConfirmacionPendiente() { return confirmacionPendiente; }
+    public void setConfirmacionPendiente(boolean confirmacionPendiente) { this.confirmacionPendiente = confirmacionPendiente; }
+    
+    public String getUltimaAccion() { return ultimaAccion; }
+    public void setUltimaAccion(String ultimaAccion) { this.ultimaAccion = ultimaAccion; }
+}

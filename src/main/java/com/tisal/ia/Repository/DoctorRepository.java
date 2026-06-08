@@ -9,6 +9,8 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import com.tisal.ia.modelEntity.DoctorEntity;
+import com.tisal.ia.modelEntity.EspecialidadEntity;
+import com.tisal.ia.sucursales.SucursalEntity;
 
 @Repository
 public interface DoctorRepository extends JpaRepository<DoctorEntity, Long> {
@@ -23,5 +25,10 @@ public interface DoctorRepository extends JpaRepository<DoctorEntity, Long> {
     List<DoctorEntity> buscarPorVector(@Param("vector") String vectorJson);
     
     Optional<DoctorEntity> findByNombre(String nombre);
+    
+    // Nuevos métodos para filtrar por relaciones
+    List<DoctorEntity> findByEspecialidad(EspecialidadEntity especialidad);
+    
+    List<DoctorEntity> findBySucursal(SucursalEntity sucursal);
 
 }

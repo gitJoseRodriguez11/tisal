@@ -5,6 +5,8 @@ import com.azure.ai.openai.OpenAIClientBuilder;
 import com.azure.ai.openai.models.*;
 import com.azure.core.credential.AzureKeyCredential;
 import com.tisal.ia.sucursales.ConsumoResponse;
+import com.tisal.ia.ReqModel.AzureAiStructuredResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,10 +24,12 @@ public class AzureAiService {
     private final AzureAiProperties properties;
     private final OpenAIClient openAIClient;
     private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
 
     public AzureAiService(AzureAiProperties properties, JdbcTemplate jdbcTemplate) {
         this.properties = properties;
         this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = new ObjectMapper();
 
         this.openAIClient = new OpenAIClientBuilder()
                 .credential(new AzureKeyCredential(properties.getApiKey()))
@@ -60,6 +64,96 @@ public class AzureAiService {
                 usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens());
 
         return choices.get(0).getMessage().getContent();
+    }
+
+    /**
+     * NUEVO: Query con respuesta estructurada en JSON
+     * La IA devolverá una respuesta en formato JSON con intención, datos extraídos y próxima acción
+     */
+    public AzureAiStructuredResponse queryWithStructuredResponse(String prompt, String conversationHistory) {
+        if (!StringUtils.hasText(prompt)) {
+            throw new IllegalArgumentException("El prompt es obligatorio.");
+        }
+        validateConfiguration();
+
+        String systemMessage = """
+            Eres un asistente clínico virtual para una red de clínicas. Tu trabajo es:
+            1. Entender la intención del usuario (consultar, agendar, buscar disponibilidad)
+            2. Extraer datos relevantes (RUT, especialidad, doctor, fecha, hora)
+            3. Decidir la próxima acción de forma estructurada
+            4. SIEMPRE responde en JSON válido con la estructura especificada
+            
+            Responde EXACTAMENTE en este formato JSON:
+            {
+                "intent": "CONSULTAR_INFORMACION|AGENDAR_CITA|BUSCAR_DISPONIBILIDAD|CONSULTAR_SUCURSALES|CONSULTAR_DOCTORES|CONSULTAR_ESPECIALIDADES|CANCELAR_CITA|DESCONOCIDA",
+                "confidence": 0.0-1.0,
+                "reasoning": "breve explicación de por qué determinaste esta intención",
+                "extracted_data": {
+                    "rut": "RUT del paciente si aplica",
+                    "doctor_name": "nombre del doctor si lo menciona",
+                    "specialty": "especialidad buscada",
+                    "branch": "sucursal",
+                    "date": "fecha en formato ISO 8601",
+                    "time": "hora en formato HH:MM",
+                    "additional_context": {"clave": "valor"}
+                },
+                "next_action": "BUSCAR_MEDICOS|CONFIRMAR_DATOS|LISTAR_DISPONIBILIDAD|REGISTRAR_PACIENTE|EJECUTAR_CITA|RESPONDER_PREGUNTA",
+                "response_message": "Respuesta amigable en español para el usuario",
+                "requires_confirmation": true/false
+            }
+            """;
+
+        ChatRequestMessage systemMsg = new ChatRequestSystemMessage(systemMessage);
+        ChatRequestMessage userMsg = new ChatRequestUserMessage(prompt + "\n\nHistorial:\n" + conversationHistory);
+
+        ChatCompletionsOptions options = new ChatCompletionsOptions(List.of(systemMsg, userMsg))
+                .setMaxTokens(1200)
+                .setTemperature(0.5);  // Menor temperatura para respuestas más consistentes
+
+        ChatCompletions response = openAIClient.getChatCompletions(properties.getDeploymentName(), options);
+        List<ChatChoice> choices = response.getChoices();
+
+        if (choices == null || choices.isEmpty()) {
+            throw new IllegalStateException("Respuesta inesperada de Azure OpenAI: respuesta vacía.");
+        }
+
+        CompletionsUsage usage = response.getUsage();
+        logger.info("Consumo Azure OpenAI (Structured) -> promptTokens={}, completionTokens={}, totalTokens={}",
+                usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens());
+
+        String jsonResponse = choices.get(0).getMessage().getContent();
+        
+        try {
+            // Limpiar el JSON si viene con caracteres extra (markdown, etc)
+            jsonResponse = jsonResponse.trim();
+            if (jsonResponse.startsWith("```json")) {
+                jsonResponse = jsonResponse.substring(7);
+            }
+            if (jsonResponse.startsWith("```")) {
+                jsonResponse = jsonResponse.substring(3);
+            }
+            if (jsonResponse.endsWith("```")) {
+                jsonResponse = jsonResponse.substring(0, jsonResponse.length() - 3);
+            }
+            jsonResponse = jsonResponse.trim();
+            
+            AzureAiStructuredResponse structuredResponse = objectMapper.readValue(jsonResponse, AzureAiStructuredResponse.class);
+            logger.info("Response parseada exitosamente. Intent: {}, Confidence: {}", 
+                    structuredResponse.getIntent(), structuredResponse.getConfidence());
+            
+            return structuredResponse;
+        } catch (Exception e) {
+            logger.error("Error parseando JSON de Azure: {}", jsonResponse, e);
+            // Devolver respuesta de error estructurada
+            AzureAiStructuredResponse errorResponse = new AzureAiStructuredResponse();
+            errorResponse.setIntent("DESCONOCIDA");
+            errorResponse.setConfidence(0.0);
+            errorResponse.setReasoning("Error al procesar la respuesta: " + e.getMessage());
+            errorResponse.setResponseMessage("Disculpe, tuve un error procesando su solicitud. Por favor intente nuevamente.");
+            errorResponse.setNextAction("RESPONDER_PREGUNTA");
+            errorResponse.setRequiresConfirmation(false);
+            return errorResponse;
+        }
     }
 
     // Generar embeddings y devolver vector
