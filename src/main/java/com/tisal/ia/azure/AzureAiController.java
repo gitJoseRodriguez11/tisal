@@ -103,14 +103,25 @@ public class AzureAiController {
      */
     @PostMapping("/sucursal/search")
     public List<SucursalEntity> buscarSucursales(@RequestBody SearchRequest request) {
-        List<Float> vector = azureAiService.generarEmbeddings(request.getTexto());
-        String vectorJson = vector.toString(); // convertir a string JSON
+        // Validar que el texto no sea null/vacío
+        String texto = request.getTexto();
+        if (texto == null || texto.trim().isEmpty()) {
+            return new java.util.ArrayList<>();  // Devolver lista vacía
+        }
+        
+        List<Float> vector = azureAiService.generarEmbeddings(texto);
+        String vectorJson = vector.toString();
         return sucursalRepository.buscarPorVector(vectorJson);
     }
 
  
     @PostMapping("/queryWithData")
     public String queryWithData(@RequestBody PromptRequest request) {
+        // Validar que el prompt no sea null/vacío
+        if (request.getPrompt() == null || request.getPrompt().trim().isEmpty()) {
+            return "⚠️ Por favor proporciona un mensaje o pregunta.";
+        }
+        
         List<Float> vector = azureAiService.generarEmbeddings(request.getPrompt());
         String vectorJson = vector.toString();
 
@@ -546,8 +557,14 @@ public class AzureAiController {
      * Acción: Consulta General - Obtener datos relacionados
      */
     private String manejarConsultaGeneralObtenerDatos(AzureAiStructuredResponse aiResponse, ConversationState state) {
+        // Usar mensaje de respuesta o texto por defecto si es null
+        String textoBusqueda = aiResponse.getResponseMessage();
+        if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+            textoBusqueda = "información clínica médica";
+        }
+        
         // Generar embeddings de la pregunta
-        List<Float> vector = azureAiService.generarEmbeddings(aiResponse.getResponseMessage());
+        List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
         String vectorJson = vector.toString();
         
         // Buscar datos relacionados
