@@ -35,13 +35,14 @@ public class ConversationState {
      * Fases específicas del flujo de agendamiento de cita (multi-turn)
      */
     public enum AgendarCitaPhase {
-        ESPERANDO_RUT,              // Esperando que ingrese RUT
-        ESPERANDO_SUCURSAL,         // Mostró sucursales, esperando que elija una (número)
-        ESPERANDO_ESPECIALIDAD,     // Mostró especialidades, esperando que elija una (número)
-        ESPERANDO_DOCTOR,           // Mostró doctores, esperando que elija uno (número)
-        ESPERANDO_FECHA,            // Esperando que ingrese fecha
-        CONFIRMANDO_CITA,           // Pidiendo confirmación final
-        COMPLETADA                  // Cita agendada exitosamente
+        ESPERANDO_RUT,              // Paso 1: Solicitar RUT
+        ESPERANDO_SUCURSAL,         // Paso 2: Listar sucursales numeradas
+        ESPERANDO_ESPECIALIDAD,     // Paso 3: Listar especialidades numeradas
+        ESPERANDO_DOCTOR,           // Paso 4: Listar doctores con disponibilidad
+        ESPERANDO_DIA_SEMANA,       // Paso 5A: Listar días de la semana disponibles
+        ESPERANDO_HORA,             // Paso 5B: Listar horas para el día seleccionado
+        CONFIRMANDO_CITA,           // Paso 6: Confirmar y agendar
+        COMPLETADA                  // Paso 7: Cita agendada exitosamente
     }
     
     private String sessionId;
@@ -68,6 +69,11 @@ public class ConversationState {
     private List<EspecialidadEntity> especialidadesListadas;  // Especialidades mostradas
     private List<DoctorEntity> doctoresConDisponibilidad;  // Doctores mostrados con disponibilidad
     private Integer opcionSeleccionada;                    // Número seleccionado por usuario (1, 2, 3...)
+    
+    // Nuevos campos para el flujo de fecha/hora
+    private java.util.Map<Integer, List<com.tisal.ia.modelEntity.DisponibilidadEntity>> diasDisponibles;  // dia_semana -> list of Disponibilidad
+    private Integer diaSemanaSeleccionado;                // Día de la semana seleccionado (1-7)
+    private List<com.tisal.ia.modelEntity.DisponibilidadEntity> horasParaDia;  // Horas disponibles para el día
     
     public ConversationState(String sessionId) {
         this.sessionId = sessionId;
@@ -133,4 +139,14 @@ public class ConversationState {
     
     public Integer getOpcionSeleccionada() { return opcionSeleccionada; }
     public void setOpcionSeleccionada(Integer opcionSeleccionada) { this.opcionSeleccionada = opcionSeleccionada; }
+    
+    // Getters/Setters para flujo de fecha y hora
+    public java.util.Map<Integer, List<com.tisal.ia.modelEntity.DisponibilidadEntity>> getDiasDisponibles() { return diasDisponibles; }
+    public void setDiasDisponibles(java.util.Map<Integer, List<com.tisal.ia.modelEntity.DisponibilidadEntity>> diasDisponibles) { this.diasDisponibles = diasDisponibles; }
+    
+    public Integer getDiaSemanaSeleccionado() { return diaSemanaSeleccionado; }
+    public void setDiaSemanaSeleccionado(Integer diaSemanaSeleccionado) { this.diaSemanaSeleccionado = diaSemanaSeleccionado; }
+    
+    public List<com.tisal.ia.modelEntity.DisponibilidadEntity> getHorasParaDia() { return horasParaDia; }
+    public void setHorasParaDia(List<com.tisal.ia.modelEntity.DisponibilidadEntity> horasParaDia) { this.horasParaDia = horasParaDia; }
 }

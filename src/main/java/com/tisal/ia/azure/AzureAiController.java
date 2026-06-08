@@ -397,7 +397,8 @@ public class AzureAiController {
      * Paso 2: Listar sucursales (numeradas) → usuario elige número
      * Paso 3: Listar especialidades (numeradas) → usuario elige número
      * Paso 4: Listar doctores con disponibilidad (numerados) → usuario elige número
-     * Paso 5: Pedir fecha (opcional, si no la extrajo Azure)
+     * Paso 5A: Listar días de la semana con disponibilidad → usuario elige número
+     * Paso 5B: Listar horas para el día seleccionado → usuario elige número
      * Paso 6: Confirmar cita
      * Paso 7: Agendar
      */
@@ -422,8 +423,11 @@ public class AzureAiController {
             case ESPERANDO_DOCTOR:
                 return paso4_ListarDoctoresYEsperar(state, aiResponse);
                 
-            case ESPERANDO_FECHA:
-                return paso5_PedirFechaYHora(state, aiResponse);
+            case ESPERANDO_DIA_SEMANA:
+                return paso5a_ListarDiasDisponibles(state, aiResponse);
+                
+            case ESPERANDO_HORA:
+                return paso5b_ListarHorasDisponibles(state, aiResponse);
                 
             case CONFIRMANDO_CITA:
                 return paso6_ConfirmarYAgendar(state, aiResponse);
@@ -572,9 +576,9 @@ public class AzureAiController {
                 // Limpiar
                 state.setOpcionSeleccionada(null);
                 
-                // Pasar al siguiente paso: FECHA
-                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_FECHA);
-                return paso5_PedirFechaYHora(state, aiResponse);
+                // Pasar al siguiente paso: DÍA DE LA SEMANA
+                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_DIA_SEMANA);
+                return paso5a_ListarDiasDisponibles(state, aiResponse);
             }
         }
         
@@ -636,25 +640,131 @@ public class AzureAiController {
     }
     
     /**
-     * PASO 5: Solicitar fecha y hora
+     * PASO 5A: Listar días de la semana con disponibilidad
      */
-    private String paso5_PedirFechaYHora(ConversationState state, AzureAiStructuredResponse aiResponse) {
-        // Si Azure extrajo fecha y hora, usarlas directamente
-        if (state.getFechaSolicitada() != null && state.getHoraStr() != null) {
-            // Pasar a confirmación
-            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.CONFIRMANDO_CITA);
-            return paso6_ConfirmarYAgendar(state, aiResponse);
+    private String paso5a_ListarDiasDisponibles(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si el usuario seleccionó un día
+        if (state.getOpcionSeleccionada() != null && state.getDiasDisponibles() != null) {
+            Integer diaSemanaIndex = state.getOpcionSeleccionada(); // 1, 2, 3... (índice visual)
+            
+            // Obtener los días únicos disponibles ordenados
+            java.util.List<Integer> diasUnicos = state.getDiasDisponibles().keySet().stream()
+                .sorted()
+                .collect(java.util.stream.Collectors.toList());
+            
+            if (diaSemanaIndex > 0 && diaSemanaIndex <= diasUnicos.size()) {
+                Integer diaSemanaSeleccionado = diasUnicos.get(diaSemanaIndex - 1);
+                state.setDiaSemanaSeleccionado(diaSemanaSeleccionado);
+                
+                // Obtener horas para ese día
+                state.setHorasParaDia(state.getDiasDisponibles().get(diaSemanaSeleccionado));
+                
+                // Limpiar opción seleccionada
+                state.setOpcionSeleccionada(null);
+                
+                // Pasar al siguiente paso: ESPERANDO_HORA
+                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_HORA);
+                return paso5b_ListarHorasDisponibles(state, aiResponse);
+            }
         }
         
-        // Si no tenemos fecha, pedirla al usuario
-        if (state.getFechaSolicitada() == null) {
-            return "📅 ¿En qué fecha deseas agendar tu cita?\n\n" +
-                   "Por favor, ingresa la fecha (ej: 15 de junio, mañana, próximo lunes)";
+        // Obtener disponibilidades para el doctor seleccionado
+        if (state.getDiasDisponibles() == null) {
+            Optional<DoctorEntity> doctorOpt = doctorRepository.findByNombre(state.getDoctorNombre());
+            if (doctorOpt.isEmpty()) {
+                return "❌ Error: Doctor no encontrado.";
+            }
+            
+            DoctorEntity doctor = doctorOpt.get();
+            
+            // Obtener próximos 7 días y agrupar disponibilidades por día de la semana
+            java.util.Map<Integer, List<com.tisal.ia.modelEntity.DisponibilidadEntity>> diasDisponibles = 
+                new java.util.LinkedHashMap<>();
+            
+            for (int i = 0; i < 7; i++) {
+                java.time.LocalDateTime fecha = java.time.LocalDateTime.now().plusDays(i);
+                int dayOfWeek = fecha.getDayOfWeek().getValue();
+                
+                List<com.tisal.ia.modelEntity.DisponibilidadEntity> disp = disponibilidadRepository
+                    .findByDoctorAndDiaSemanaAndEstado(doctor, dayOfWeek, "DISPONIBLE");
+                
+                if (!disp.isEmpty()) {
+                    diasDisponibles.put(dayOfWeek, disp);
+                }
+            }
+            
+            state.setDiasDisponibles(diasDisponibles);
         }
         
-        // Si tenemos fecha pero no hora, pedirla
-        return "🕐 ¿A qué hora prefieres tu cita?\n\n" +
-               "Por favor, ingresa la hora (ej: 10:00, 3:30 PM)";
+        if (state.getDiasDisponibles().isEmpty()) {
+            return "❌ El doctor seleccionado no tiene disponibilidad en los próximos 7 días.";
+        }
+        
+        // Mostrar días disponibles numerados
+        java.util.List<Integer> diasUnicos = state.getDiasDisponibles().keySet().stream()
+            .sorted()
+            .collect(java.util.stream.Collectors.toList());
+        
+        StringBuilder sb = new StringBuilder("📅 Selecciona un día:\n\n");
+        for (int i = 0; i < diasUnicos.size(); i++) {
+            Integer dia = diasUnicos.get(i);
+            String nombreDia = nombreDia(dia);
+            int cantidadHoras = state.getDiasDisponibles().get(dia).size();
+            sb.append((i + 1)).append(". ").append(nombreDia)
+              .append(" (").append(cantidadHoras).append(" horarios disponibles)\n");
+        }
+        sb.append("\nPor favor, ingresa el número del día (ej: 1, 2, 3...)");
+        
+        return sb.toString();
+    }
+    
+    /**
+     * PASO 5B: Listar horas disponibles para el día seleccionado
+     */
+    private String paso5b_ListarHorasDisponibles(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si el usuario seleccionó una hora
+        if (state.getOpcionSeleccionada() != null && state.getHorasParaDia() != null) {
+            int indice = state.getOpcionSeleccionada() - 1;
+            
+            if (indice >= 0 && indice < state.getHorasParaDia().size()) {
+                com.tisal.ia.modelEntity.DisponibilidadEntity disponibilidadSeleccionada = 
+                    state.getHorasParaDia().get(indice);
+                
+                // Guardar hora seleccionada
+                state.setHoraStr(disponibilidadSeleccionada.getHora().toString());
+                
+                // Construir fecha completa basada en el día de la semana
+                java.time.LocalDateTime ahora = java.time.LocalDateTime.now();
+                for (int i = 0; i < 7; i++) {
+                    java.time.LocalDateTime fecha = ahora.plusDays(i);
+                    if (fecha.getDayOfWeek().getValue() == state.getDiaSemanaSeleccionado()) {
+                        state.setFechaSolicitada(fecha);
+                        break;
+                    }
+                }
+                
+                // Limpiar
+                state.setOpcionSeleccionada(null);
+                
+                // Pasar al siguiente paso: CONFIRMANDO_CITA
+                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.CONFIRMANDO_CITA);
+                return paso6_ConfirmarYAgendar(state, aiResponse);
+            }
+        }
+        
+        if (state.getHorasParaDia() == null || state.getHorasParaDia().isEmpty()) {
+            return "❌ No hay horas disponibles para ese día.";
+        }
+        
+        // Mostrar horas numeradas
+        StringBuilder sb = new StringBuilder("🕐 Selecciona una hora:\n\n");
+        for (int i = 0; i < state.getHorasParaDia().size(); i++) {
+            com.tisal.ia.modelEntity.DisponibilidadEntity disp = state.getHorasParaDia().get(i);
+            sb.append((i + 1)).append(". ").append(disp.getHora()).append("\n");
+        }
+        sb.append("\nPor favor, ingresa el número de la hora (ej: 1, 2, 3...)");
+        
+        return sb.toString();
     }
     
     /**
