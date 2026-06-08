@@ -468,13 +468,16 @@ public class AzureAiController {
      * Acción: Buscar Sucursales
      */
     private String manejarBuscarSucursales(AzureAiStructuredResponse aiResponse, ConversationState state) {
-        List<SucursalEntity> sucursales;
+        // Generar embeddings para búsqueda semántica
+        String textoBusqueda = state.getSucursalBuscada() != null ? state.getSucursalBuscada() : "sucursal clínica";
+        List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
+        String vectorJson = vector.toString();
         
-        if (state.getSucursalBuscada() != null) {
-            Optional<SucursalEntity> s = sucursalRepository.findByNombre(state.getSucursalBuscada());
-            sucursales = s.map(java.util.List::of).orElseGet(java.util.List::of);
-        } else {
-            sucursales = (List<SucursalEntity>) sucursalRepository.findAll();
+        // Buscar sucursales por vector
+        List<SucursalEntity> sucursales = sucursalRepository.buscarPorVector(vectorJson);
+        
+        if (sucursales.isEmpty()) {
+            return "❌ No encontré sucursales con esos criterios. Intenta con otros términos.";
         }
         
         StringBuilder resultado = new StringBuilder("🏥 Sucursales:\n\n");
@@ -491,18 +494,20 @@ public class AzureAiController {
      * Acción: Buscar Doctores
      */
     private String manejarBuscarDoctores(AzureAiStructuredResponse aiResponse, ConversationState state) {
-        List<DoctorEntity> doctores;
+        // Construir texto para embeddings basado en lo que el usuario buscó
+        String textoBusqueda = state.getEspecialidadBuscada() != null ? state.getEspecialidadBuscada() : 
+                               state.getSucursalBuscada() != null ? state.getSucursalBuscada() : 
+                               "doctor médico";
         
-        if (state.getEspecialidadBuscada() != null) {
-            Optional<EspecialidadEntity> espec = especialidadRepository.findByNombre(state.getEspecialidadBuscada());
-            doctores = espec.map(e -> doctorRepository.findByEspecialidad(e))
-                    .orElseGet(java.util.List::of);
-        } else if (state.getSucursalBuscada() != null) {
-            Optional<SucursalEntity> suc = sucursalRepository.findByNombre(state.getSucursalBuscada());
-            doctores = suc.map(s -> doctorRepository.findBySucursal(s))
-                    .orElseGet(java.util.List::of);
-        } else {
-            doctores = (List<DoctorEntity>) doctorRepository.findAll();
+        // Generar embeddings para búsqueda semántica
+        List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
+        String vectorJson = vector.toString();
+        
+        // Buscar doctores por vector
+        List<DoctorEntity> doctores = doctorRepository.buscarPorVector(vectorJson);
+        
+        if (doctores.isEmpty()) {
+            return "❌ No encontré doctores con esos criterios. Intenta con otros términos.";
         }
         
         StringBuilder resultado = new StringBuilder("👨‍⚕️ Doctores:\n\n");
@@ -518,7 +523,17 @@ public class AzureAiController {
      * Acción: Buscar Especialidades
      */
     private String manejarBuscarEspecialidades(AzureAiStructuredResponse aiResponse, ConversationState state) {
-        List<EspecialidadEntity> especialidades = (List<EspecialidadEntity>) especialidadRepository.findAll();
+        // Generar embeddings para búsqueda semántica
+        String textoBusqueda = state.getEspecialidadBuscada() != null ? state.getEspecialidadBuscada() : "especialidad médica";
+        List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
+        String vectorJson = vector.toString();
+        
+        // Buscar especialidades por vector
+        List<EspecialidadEntity> especialidades = especialidadRepository.buscarPorVector(vectorJson);
+        
+        if (especialidades.isEmpty()) {
+            return "❌ No encontré especialidades con esos criterios. Intenta con otros términos.";
+        }
         
         StringBuilder resultado = new StringBuilder("🏥 Especialidades disponibles:\n\n");
         especialidades.forEach(e -> resultado
