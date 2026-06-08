@@ -49,7 +49,9 @@ public class AzureAiController {
     private final PacienteRepository pacienteRepository;
     private final ConversacionRepository conversacionRepository;
 
-  
+    // 🆕 Cache de estados de sesión (mantiene estado entre turnos)
+    private static final java.util.Map<String, ConversationState> sessionStates = 
+        new java.util.concurrent.ConcurrentHashMap<>();
 
     public AzureAiController(AzureAiService azureAiService, SucursalRepository sucursalRepository, 
     		SucursalService sucursalService, EspecialidadRepository especialidadRepository,
@@ -268,11 +270,20 @@ public class AzureAiController {
      */
     @PostMapping("/queryWithDataV2")
     public String queryWithDataV2(@RequestBody PromptRequest request) {
-        // 1. Recuperar o crear estado de la conversación
-        ConversationState state = new ConversationState(request.getSessionId());
+        // 1. 🆕 Recuperar o crear estado de la conversación (PERSISTE ENTRE TURNOS)
+        ConversationState state = sessionStates.getOrDefault(
+            request.getSessionId(), 
+            new ConversationState(request.getSessionId())
+        );
         state.setTurnNumber(state.getTurnNumber() + 1);
         
-        // 2. Construir historial de conversación
+        // 2. Detectar si el usuario ingresó un número (selección de opción)
+        Integer opcionSeleccionada = extraerNumero(request.getPrompt());
+        if (opcionSeleccionada != null) {
+            state.setOpcionSeleccionada(opcionSeleccionada);
+        }
+        
+        // 3. Construir historial de conversación
         StringBuilder conversationHistory = new StringBuilder();
         List<ConversacionEntity> historial = conversacionRepository
             .findBySessionIdOrderByTimestampAsc(request.getSessionId());
@@ -284,13 +295,20 @@ public class AzureAiController {
             }
         }
         
-        // 3. LLAMAR A AZURE CON RESPUESTA ESTRUCTURADA
+        // 4. LLAMAR A AZURE CON RESPUESTA ESTRUCTURADA
         AzureAiStructuredResponse aiResponse = azureAiService.queryWithStructuredResponse(
             request.getPrompt(), 
             conversationHistory.toString()
         );
         
-        // 4. Extraer datos del JSON
+        // 5. Actualizar intent si cambió
+        try {
+            state.setIntent(ConversationState.Intent.valueOf(aiResponse.getIntent()));
+        } catch (Exception e) {
+            state.setIntent(ConversationState.Intent.DESCONOCIDA);
+        }
+        
+        // 6. Extraer datos del JSON
         if (aiResponse.getExtractedData() != null) {
             if (aiResponse.getExtractedData().getRut() != null) {
                 state.setPacienteRut(aiResponse.getExtractedData().getRut());
@@ -316,10 +334,13 @@ public class AzureAiController {
             }
         }
         
-        // 5. MÁQUINA DE ESTADOS: Ejecutar acción basada en intención
+        // 7. MÁQUINA DE ESTADOS: Ejecutar acción basada en intención
         String respuestaFinal = manejarIntention(aiResponse, state, request.getSessionId());
         
-        // 6. Guardar en historial
+        // 8. 🆕 Guardar estado actualizado en memoria (PERSISTE PARA PRÓXIMO TURNO)
+        sessionStates.put(request.getSessionId(), state);
+        
+        // 9. Guardar en historial de BD
         ConversacionEntity conv = new ConversacionEntity();
         conv.setSessionId(request.getSessionId());
         conv.setMensajeUsuario(request.getPrompt());
@@ -370,27 +391,302 @@ public class AzureAiController {
     }
     
     /**
-     * Acción: Agendar Cita
+     * Acción: Agendar Cita - FLUJO CONVERSACIONAL MULTI-TURN
+     * 
+     * Paso 1: Pedir RUT
+     * Paso 2: Listar sucursales (numeradas) → usuario elige número
+     * Paso 3: Listar especialidades (numeradas) → usuario elige número
+     * Paso 4: Listar doctores con disponibilidad (numerados) → usuario elige número
+     * Paso 5: Pedir fecha (opcional, si no la extrajo Azure)
+     * Paso 6: Confirmar cita
+     * Paso 7: Agendar
      */
     private String manejarAgendarCita(AzureAiStructuredResponse aiResponse, ConversationState state) {
-        // Validar datos necesarios
-        if (state.getPacienteRut() == null) {
-            return "⚠️ Por favor proporciona tu RUT para agendar la cita.";
-        }
-        if (state.getDoctorNombre() == null || state.getFechaSolicitada() == null || state.getHoraStr() == null) {
-            return "⚠️ Necesito: doctor, fecha y hora. " + aiResponse.getResponseMessage();
+        // Inicializar fase si es primera vez
+        if (state.getAgendarCitaPhase() == null) {
+            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_RUT);
         }
         
-        // Buscar paciente
+        // Máquina de estados del flujo de agendamiento
+        switch (state.getAgendarCitaPhase()) {
+            
+            case ESPERANDO_RUT:
+                return paso1_PedirRut(state, aiResponse);
+                
+            case ESPERANDO_SUCURSAL:
+                return paso2_ListarSucursalesYEsperar(state, aiResponse);
+                
+            case ESPERANDO_ESPECIALIDAD:
+                return paso3_ListarEspecialidadesYEsperar(state, aiResponse);
+                
+            case ESPERANDO_DOCTOR:
+                return paso4_ListarDoctoresYEsperar(state, aiResponse);
+                
+            case ESPERANDO_FECHA:
+                return paso5_PedirFechaYHora(state, aiResponse);
+                
+            case CONFIRMANDO_CITA:
+                return paso6_ConfirmarYAgendar(state, aiResponse);
+                
+            case COMPLETADA:
+                return "✅ Tu cita ya ha sido agendada. ¿Hay algo más en lo que pueda ayudarte?";
+                
+            default:
+                return "⚠️ Error en el flujo de agendamiento.";
+        }
+    }
+    
+    /**
+     * PASO 1: Solicitar RUT del paciente
+     */
+    private String paso1_PedirRut(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si Azure extrajo un RUT, usar ese
+        if (state.getPacienteRut() != null && !state.getPacienteRut().isEmpty()) {
+            // Validar que el RUT exista
+            Optional<PacienteEntity> pacienteOpt = pacienteRepository.findByRut(state.getPacienteRut());
+            if (pacienteOpt.isEmpty()) {
+                return "⚠️ El RUT " + state.getPacienteRut() + 
+                       " no está registrado en nuestro sistema.\n\n¿Deseas ingresarlo como nuevo paciente?";
+            }
+            
+            // RUT válido → pasar al siguiente paso: SUCURSALES
+            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_SUCURSAL);
+            return paso2_ListarSucursalesYEsperar(state, aiResponse);
+        }
+        
+        // Si no tiene RUT, pedirlo
+        return "👤 Para agendar tu cita, necesito tu RUT.\n\n" +
+               "Por favor, ingresa tu RUT (ej: 15.123.456-7)";
+    }
+    
+    /**
+     * PASO 2: Listar sucursales y esperar selección
+     */
+    private String paso2_ListarSucursalesYEsperar(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si el usuario seleccionó una sucursal (ingresó un número)
+        if (state.getOpcionSeleccionada() != null && state.getSucursalesListadas() != null) {
+            int indice = state.getOpcionSeleccionada() - 1;  // Usuario ingresa 1, 2, 3... => índice 0, 1, 2...
+            
+            if (indice >= 0 && indice < state.getSucursalesListadas().size()) {
+                SucursalEntity sucursalSeleccionada = state.getSucursalesListadas().get(indice);
+                state.setSucursalBuscada(sucursalSeleccionada.getNombre());
+                
+                // Limpiar opción seleccionada para próximo uso
+                state.setOpcionSeleccionada(null);
+                
+                // Pasar al siguiente paso: ESPECIALIDADES
+                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_ESPECIALIDAD);
+                return paso3_ListarEspecialidadesYEsperar(state, aiResponse);
+            }
+        }
+        
+        // Obtener sucursales (primero intenta por sucursal buscada, si no listar todas)
+        List<SucursalEntity> sucursales;
+        if (state.getSucursalesListadas() == null) {
+            // Primera vez mostrando sucursales
+            if (state.getSucursalBuscada() != null && !state.getSucursalBuscada().isEmpty()) {
+                Optional<SucursalEntity> s = sucursalRepository.findByNombre(state.getSucursalBuscada());
+                sucursales = s.map(java.util.List::of).orElseGet(sucursalRepository::findAll);
+            } else {
+                sucursales = sucursalRepository.findAll();
+            }
+            state.setSucursalesListadas(sucursales);
+        } else {
+            sucursales = state.getSucursalesListadas();
+        }
+        
+        if (sucursales.isEmpty()) {
+            return "❌ No hay sucursales disponibles en este momento.";
+        }
+        
+        // Mostrar sucursales numeradas
+        StringBuilder sb = new StringBuilder("🏥 Selecciona una sucursal:\n\n");
+        for (int i = 0; i < sucursales.size(); i++) {
+            SucursalEntity s = sucursales.get(i);
+            sb.append((i + 1)).append(". ")
+              .append(s.getNombre())
+              .append(" - ").append(s.getDireccion())
+              .append("\n");
+        }
+        sb.append("\nPor favor, ingresa el número de la sucursal (ej: 1, 2, 3...)");
+        
+        return sb.toString();
+    }
+    
+    /**
+     * PASO 3: Listar especialidades y esperar selección
+     */
+    private String paso3_ListarEspecialidadesYEsperar(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si el usuario seleccionó una especialidad
+        if (state.getOpcionSeleccionada() != null && state.getEspecialidadesListadas() != null) {
+            int indice = state.getOpcionSeleccionada() - 1;
+            
+            if (indice >= 0 && indice < state.getEspecialidadesListadas().size()) {
+                EspecialidadEntity especialidadSeleccionada = state.getEspecialidadesListadas().get(indice);
+                state.setEspecialidadBuscada(especialidadSeleccionada.getNombre());
+                
+                // Limpiar
+                state.setOpcionSeleccionada(null);
+                
+                // Pasar al siguiente paso: DOCTORES
+                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_DOCTOR);
+                return paso4_ListarDoctoresYEsperar(state, aiResponse);
+            }
+        }
+        
+        // Obtener especialidades disponibles
+        List<EspecialidadEntity> especialidades;
+        if (state.getEspecialidadesListadas() == null) {
+            especialidades = especialidadRepository.findAll();
+            state.setEspecialidadesListadas(especialidades);
+        } else {
+            especialidades = state.getEspecialidadesListadas();
+        }
+        
+        if (especialidades.isEmpty()) {
+            return "❌ No hay especialidades disponibles en este momento.";
+        }
+        
+        // Mostrar especialidades numeradas
+        StringBuilder sb = new StringBuilder("🏥 Selecciona una especialidad:\n\n");
+        for (int i = 0; i < especialidades.size(); i++) {
+            sb.append((i + 1)).append(". ").append(especialidades.get(i).getNombre()).append("\n");
+        }
+        sb.append("\nPor favor, ingresa el número de la especialidad (ej: 1, 2, 3...)");
+        
+        return sb.toString();
+    }
+    
+    /**
+     * PASO 4: Listar doctores con disponibilidad y esperar selección
+     */
+    private String paso4_ListarDoctoresYEsperar(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si el usuario seleccionó un doctor
+        if (state.getOpcionSeleccionada() != null && state.getDoctoresConDisponibilidad() != null) {
+            int indice = state.getOpcionSeleccionada() - 1;
+            
+            if (indice >= 0 && indice < state.getDoctoresConDisponibilidad().size()) {
+                DoctorEntity doctorSeleccionado = state.getDoctoresConDisponibilidad().get(indice);
+                state.setDoctorNombre(doctorSeleccionado.getNombre());
+                
+                // Limpiar
+                state.setOpcionSeleccionada(null);
+                
+                // Pasar al siguiente paso: FECHA
+                state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_FECHA);
+                return paso5_PedirFechaYHora(state, aiResponse);
+            }
+        }
+        
+        // Obtener doctores disponibles
+        List<DoctorEntity> doctores;
+        if (state.getDoctoresConDisponibilidad() == null) {
+            // Buscar doctores por especialidad y sucursal
+            Optional<EspecialidadEntity> especialidad = especialidadRepository.findByNombre(state.getEspecialidadBuscada());
+            
+            if (especialidad.isPresent()) {
+                doctores = doctorRepository.findByEspecialidad(especialidad.get());
+                // Filtrar por sucursal si aplica
+                if (state.getSucursalBuscada() != null && !state.getSucursalBuscada().isEmpty()) {
+                    Optional<SucursalEntity> sucursal = sucursalRepository.findByNombre(state.getSucursalBuscada());
+                    if (sucursal.isPresent()) {
+                        doctores = doctores.stream()
+                            .filter(d -> d.getSucursal().getId().equals(sucursal.get().getId()))
+                            .collect(java.util.stream.Collectors.toList());
+                    }
+                }
+            } else {
+                doctores = new java.util.ArrayList<>();
+            }
+            state.setDoctoresConDisponibilidad(doctores);
+        } else {
+            doctores = state.getDoctoresConDisponibilidad();
+        }
+        
+        if (doctores.isEmpty()) {
+            return "❌ No hay doctores disponibles con esa especialidad y sucursal.";
+        }
+        
+        // Mostrar doctores numerados CON su disponibilidad
+        StringBuilder sb = new StringBuilder("👨‍⚕️ Selecciona un doctor:\n\n");
+        for (int i = 0; i < doctores.size(); i++) {
+            DoctorEntity d = doctores.get(i);
+            sb.append((i + 1)).append(". Dr. ").append(d.getNombre())
+              .append(" (").append(d.getEspecialidad().getNombre()).append(")")
+              .append("\n   Sucursal: ").append(d.getSucursal().getNombre()).append("\n");
+            
+            // Mostrar horarios disponibles próximos 3 días
+            for (int j = 0; j < 3; j++) {
+                LocalDateTime fecha = LocalDateTime.now().plusDays(j);
+                List<DisponibilidadEntity> disp = disponibilidadRepository
+                    .findByDoctorAndDiaSemanaAndEstado(d, fecha.getDayOfWeek().getValue(), "DISPONIBLE");
+                
+                if (!disp.isEmpty()) {
+                    sb.append("   📆 ").append(nombreDia(fecha.getDayOfWeek().getValue())).append(": ");
+                    disp.stream().limit(3).forEach(h -> sb.append(h.getHora()).append(" "));
+                    if (disp.size() > 3) sb.append("...");
+                    sb.append("\n");
+                }
+            }
+            sb.append("\n");
+        }
+        sb.append("Por favor, ingresa el número del doctor (ej: 1, 2, 3...)");
+        
+        return sb.toString();
+    }
+    
+    /**
+     * PASO 5: Solicitar fecha y hora
+     */
+    private String paso5_PedirFechaYHora(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Si Azure extrajo fecha y hora, usarlas directamente
+        if (state.getFechaSolicitada() != null && state.getHoraStr() != null) {
+            // Pasar a confirmación
+            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.CONFIRMANDO_CITA);
+            return paso6_ConfirmarYAgendar(state, aiResponse);
+        }
+        
+        // Si no tenemos fecha, pedirla al usuario
+        if (state.getFechaSolicitada() == null) {
+            return "📅 ¿En qué fecha deseas agendar tu cita?\n\n" +
+                   "Por favor, ingresa la fecha (ej: 15 de junio, mañana, próximo lunes)";
+        }
+        
+        // Si tenemos fecha pero no hora, pedirla
+        return "🕐 ¿A qué hora prefieres tu cita?\n\n" +
+               "Por favor, ingresa la hora (ej: 10:00, 3:30 PM)";
+    }
+    
+    /**
+     * PASO 6: Confirmar y agendar la cita
+     */
+    private String paso6_ConfirmarYAgendar(ConversationState state, AzureAiStructuredResponse aiResponse) {
+        // Validar datos
+        if (state.getPacienteRut() == null || state.getPacienteRut().isEmpty()) {
+            return "⚠️ Error: No tienes RUT registrado. Por favor, reinicia el proceso.";
+        }
+        
+        if (state.getDoctorNombre() == null || state.getDoctorNombre().isEmpty()) {
+            return "⚠️ Error: No seleccionaste un doctor. Por favor, reinicia el proceso.";
+        }
+        
+        if (state.getFechaSolicitada() == null) {
+            return "⚠️ Error: No ingresaste una fecha. Por favor, reinicia el proceso.";
+        }
+        
+        if (state.getHoraStr() == null || state.getHoraStr().isEmpty()) {
+            return "⚠️ Error: No ingresaste una hora. Por favor, reinicia el proceso.";
+        }
+        
+        // Buscar paciente, doctor, verificar disponibilidad
         Optional<PacienteEntity> pacienteOpt = pacienteRepository.findByRut(state.getPacienteRut());
         if (pacienteOpt.isEmpty()) {
-            return "⚠️ El RUT " + state.getPacienteRut() + " no está registrado. ¿Quieres ingresarlo?";
+            return "⚠️ El RUT no se encontró en el sistema.";
         }
         
-        // Buscar doctor
         Optional<DoctorEntity> doctorOpt = doctorRepository.findByNombre(state.getDoctorNombre());
         if (doctorOpt.isEmpty()) {
-            return "⚠️ Doctor '" + state.getDoctorNombre() + "' no encontrado.";
+            return "⚠️ El doctor no se encontró en el sistema.";
         }
         
         DoctorEntity doctor = doctorOpt.get();
@@ -407,10 +703,12 @@ public class AzureAiController {
         boolean disponible = disp.stream().anyMatch(h -> h.getHora().equals(hora));
         
         if (!disponible) {
-            return "⚠️ El Dr. " + doctor.getNombre() + " no tiene disponibilidad a esa hora.";
+            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_DOCTOR);
+            return "⚠️ Lo siento, ese doctor no tiene disponibilidad a esa hora.\n\n" +
+                   "Por favor, elige otro doctor o ajusta la hora.";
         }
         
-        // CREAR CITA
+        // ✅ CREAR CITA
         CitaEntity cita = new CitaEntity();
         cita.setPaciente(pacienteOpt.get());
         cita.setDoctor(doctor);
@@ -418,12 +716,18 @@ public class AzureAiController {
         cita.setEstado("confirmada");
         citaRepository.save(cita);
         
-        return "✅ Cita agendada exitosamente!\n" +
-               "Doctor: " + doctor.getNombre() + "\n" +
-               "Especialidad: " + doctor.getEspecialidad().getNombre() + "\n" +
-               "Fecha: " + state.getFechaSolicitada().toLocalDate() + "\n" +
-               "Hora: " + hora + "\n" +
-               "Sucursal: " + doctor.getSucursal().getNombre();
+        // Marcar como completada
+        state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.COMPLETADA);
+        
+        return "✅ ¡Cita agendada exitosamente!\n\n" +
+               "📋 Resumen:\n" +
+               "  Paciente: " + pacienteOpt.get().getNombre() + "\n" +
+               "  Doctor: Dr. " + doctor.getNombre() + "\n" +
+               "  Especialidad: " + doctor.getEspecialidad().getNombre() + "\n" +
+               "  Sucursal: " + doctor.getSucursal().getNombre() + "\n" +
+               "  Fecha: " + state.getFechaSolicitada().toLocalDate() + "\n" +
+               "  Hora: " + hora + "\n\n" +
+               "Te enviaremos un recordatorio 24 horas antes de tu cita.";
     }
     
     /**
@@ -797,7 +1101,22 @@ public class AzureAiController {
 
         return sb.toString() + "-" + dv;
     }
-
-   
+    
+    /**
+     * Extrae el primer número encontrado en el texto
+     * Usado para que el usuario seleccione una opción (ej: "1", "2", "3")
+     */
+    private Integer extraerNumero(String texto) {
+        if (texto == null || texto.isEmpty()) return null;
+        
+        // Buscar el primer número
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\b(\\d+)\\b");
+        java.util.regex.Matcher matcher = pattern.matcher(texto);
+        
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
+        }
+        return null;
+    }
 
 }

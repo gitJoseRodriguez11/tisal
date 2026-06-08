@@ -1,6 +1,10 @@
 package com.tisal.ia.ReqModel;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import com.tisal.ia.sucursales.SucursalEntity;
+import com.tisal.ia.modelEntity.EspecialidadEntity;
+import com.tisal.ia.modelEntity.DoctorEntity;
 
 /**
  * Máquina de estados para manejar el flujo de conversación dinámicamente
@@ -27,6 +31,19 @@ public class ConversationState {
         ERROR                      // Hubo un error
     }
     
+    /**
+     * Fases específicas del flujo de agendamiento de cita (multi-turn)
+     */
+    public enum AgendarCitaPhase {
+        ESPERANDO_RUT,              // Esperando que ingrese RUT
+        ESPERANDO_SUCURSAL,         // Mostró sucursales, esperando que elija una (número)
+        ESPERANDO_ESPECIALIDAD,     // Mostró especialidades, esperando que elija una (número)
+        ESPERANDO_DOCTOR,           // Mostró doctores, esperando que elija uno (número)
+        ESPERANDO_FECHA,            // Esperando que ingrese fecha
+        CONFIRMANDO_CITA,           // Pidiendo confirmación final
+        COMPLETADA                  // Cita agendada exitosamente
+    }
+    
     private String sessionId;
     private Intent intent;
     private ConversationPhase phase;
@@ -44,6 +61,13 @@ public class ConversationState {
     private int turnNumber;
     private boolean confirmacionPendiente;
     private String ultimaAccion;
+    
+    // Estado específico del flujo de agendamiento (multi-turn)
+    private AgendarCitaPhase agendarCitaPhase;
+    private List<SucursalEntity> sucursalesListadas;      // Sucursales mostradas al usuario
+    private List<EspecialidadEntity> especialidadesListadas;  // Especialidades mostradas
+    private List<DoctorEntity> doctoresConDisponibilidad;  // Doctores mostrados con disponibilidad
+    private Integer opcionSeleccionada;                    // Número seleccionado por usuario (1, 2, 3...)
     
     public ConversationState(String sessionId) {
         this.sessionId = sessionId;
@@ -93,4 +117,20 @@ public class ConversationState {
     
     public String getUltimaAccion() { return ultimaAccion; }
     public void setUltimaAccion(String ultimaAccion) { this.ultimaAccion = ultimaAccion; }
+    
+    // Getters/Setters para flujo de agendamiento
+    public AgendarCitaPhase getAgendarCitaPhase() { return agendarCitaPhase; }
+    public void setAgendarCitaPhase(AgendarCitaPhase agendarCitaPhase) { this.agendarCitaPhase = agendarCitaPhase; }
+    
+    public List<SucursalEntity> getSucursalesListadas() { return sucursalesListadas; }
+    public void setSucursalesListadas(List<SucursalEntity> sucursalesListadas) { this.sucursalesListadas = sucursalesListadas; }
+    
+    public List<EspecialidadEntity> getEspecialidadesListadas() { return especialidadesListadas; }
+    public void setEspecialidadesListadas(List<EspecialidadEntity> especialidadesListadas) { this.especialidadesListadas = especialidadesListadas; }
+    
+    public List<DoctorEntity> getDoctoresConDisponibilidad() { return doctoresConDisponibilidad; }
+    public void setDoctoresConDisponibilidad(List<DoctorEntity> doctoresConDisponibilidad) { this.doctoresConDisponibilidad = doctoresConDisponibilidad; }
+    
+    public Integer getOpcionSeleccionada() { return opcionSeleccionada; }
+    public void setOpcionSeleccionada(Integer opcionSeleccionada) { this.opcionSeleccionada = opcionSeleccionada; }
 }
