@@ -480,7 +480,11 @@ public class AzureAiController {
      */
     private String manejarBuscarSucursales(AzureAiStructuredResponse aiResponse, ConversationState state) {
         // Generar embeddings para búsqueda semántica
-        String textoBusqueda = state.getSucursalBuscada() != null ? state.getSucursalBuscada() : "sucursal clínica";
+        String textoBusqueda = state.getSucursalBuscada();
+        // Validar que no sea null ni vacío
+        if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+            textoBusqueda = "sucursal clínica";
+        }
         List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
         String vectorJson = vector.toString();
         
@@ -506,9 +510,13 @@ public class AzureAiController {
      */
     private String manejarBuscarDoctores(AzureAiStructuredResponse aiResponse, ConversationState state) {
         // Construir texto para embeddings basado en lo que el usuario buscó
-        String textoBusqueda = state.getEspecialidadBuscada() != null ? state.getEspecialidadBuscada() : 
-                               state.getSucursalBuscada() != null ? state.getSucursalBuscada() : 
-                               "doctor médico";
+        String textoBusqueda = state.getEspecialidadBuscada();
+        if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+            textoBusqueda = state.getSucursalBuscada();
+            if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+                textoBusqueda = "doctor médico";
+            }
+        }
         
         // Generar embeddings para búsqueda semántica
         List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
@@ -535,7 +543,11 @@ public class AzureAiController {
      */
     private String manejarBuscarEspecialidades(AzureAiStructuredResponse aiResponse, ConversationState state) {
         // Generar embeddings para búsqueda semántica
-        String textoBusqueda = state.getEspecialidadBuscada() != null ? state.getEspecialidadBuscada() : "especialidad médica";
+        String textoBusqueda = state.getEspecialidadBuscada();
+        // Validar que no sea null ni vacío
+        if (textoBusqueda == null || textoBusqueda.trim().isEmpty()) {
+            textoBusqueda = "especialidad médica";
+        }
         List<Float> vector = azureAiService.generarEmbeddings(textoBusqueda);
         String vectorJson = vector.toString();
         
