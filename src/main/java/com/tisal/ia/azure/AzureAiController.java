@@ -14,6 +14,7 @@ import com.tisal.ia.ReqModel.DisponibilidadRequest;
 import com.tisal.ia.ReqModel.DoctorRequest;
 import com.tisal.ia.ReqModel.EspecialidadReqModel;
 import com.tisal.ia.ReqModel.FechaParser;
+import com.tisal.ia.ReqModel.RutUtils;
 import com.tisal.ia.ReqModel.ConversationState;
 import com.tisal.ia.ReqModel.AzureAiStructuredResponse;
 import com.tisal.ia.modelEntity.CitaEntity;
@@ -314,7 +315,19 @@ public class AzureAiController {
         // 6. Extraer datos del JSON
         if (aiResponse.getExtractedData() != null) {
             if (aiResponse.getExtractedData().getRut() != null) {
-                state.setPacienteRut(aiResponse.getExtractedData().getRut());
+                String rutExtraido = aiResponse.getExtractedData().getRut().trim();
+                String rutNormalizado = normalizarRutSeguro(rutExtraido);
+
+                ConversationState.AgendarCitaPhase fase = state.getAgendarCitaPhase();
+                boolean bloquearSobrescrituraRut =
+                    fase == ConversationState.AgendarCitaPhase.ESPERANDO_DIA_SEMANA ||
+                    fase == ConversationState.AgendarCitaPhase.ESPERANDO_HORA ||
+                    fase == ConversationState.AgendarCitaPhase.CONFIRMANDO_CITA;
+
+                // No sobrescribir RUT en fases finales, excepto si aún no existe en estado
+                if (rutNormalizado != null && (!bloquearSobrescrituraRut || state.getPacienteRut() == null)) {
+                    state.setPacienteRut(rutNormalizado);
+                }
             }
             if (aiResponse.getExtractedData().getDoctorName() != null) {
                 String doctorExtraido = aiResponse.getExtractedData().getDoctorName().trim();
@@ -478,7 +491,7 @@ public class AzureAiController {
         // Si Azure extrajo un RUT, usar ese
         if (state.getPacienteRut() != null && !state.getPacienteRut().isEmpty()) {
             // Validar que el RUT exista
-            Optional<PacienteEntity> pacienteOpt = pacienteRepository.findByRut(state.getPacienteRut());
+            Optional<PacienteEntity> pacienteOpt = buscarPacientePorRut(state.getPacienteRut());
             if (pacienteOpt.isEmpty()) {
                 return "⚠️ El RUT " + state.getPacienteRut() + 
                        " no está registrado en nuestro sistema.\n\n¿Deseas ingresarlo como nuevo paciente?";
@@ -820,7 +833,7 @@ public class AzureAiController {
         }
         
         // Buscar paciente, doctor, verificar disponibilidad
-        Optional<PacienteEntity> pacienteOpt = pacienteRepository.findByRut(state.getPacienteRut());
+        Optional<PacienteEntity> pacienteOpt = buscarPacientePorRut(state.getPacienteRut());
         if (pacienteOpt.isEmpty()) {
             return "⚠️ El RUT no se encontró en el sistema.";
         }
@@ -1333,6 +1346,38 @@ public class AzureAiController {
             return Integer.parseInt(matcher.group(1));
         }
         return null;
+    }
+
+    private String normalizarRutSeguro(String rutRaw) {
+        if (rutRaw == null || rutRaw.trim().isEmpty()) return null;
+
+        String extraido = extraerRut(rutRaw);
+        if (extraido != null) {
+            return extraido;
+        }
+
+        String normalizado = RutUtils.normalizarRut(rutRaw);
+        if (normalizado != null && RutUtils.validarRut(normalizado)) {
+            return normalizado;
+        }
+
+        return null;
+    }
+
+    private Optional<PacienteEntity> buscarPacientePorRut(String rut) {
+        if (rut == null || rut.trim().isEmpty()) {
+            return Optional.empty();
+        }
+
+        String rutNormalizado = normalizarRutSeguro(rut);
+        if (rutNormalizado != null) {
+            Optional<PacienteEntity> porNormalizado = pacienteRepository.findByRut(rutNormalizado);
+            if (porNormalizado.isPresent()) {
+                return porNormalizado;
+            }
+        }
+
+        return pacienteRepository.findByRut(rut);
     }
 
     private boolean esPreguntaSobreDatosPersonales(String prompt) {
