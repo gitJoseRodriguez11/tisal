@@ -314,7 +314,17 @@ public class AzureAiController {
                 state.setPacienteRut(aiResponse.getExtractedData().getRut());
             }
             if (aiResponse.getExtractedData().getDoctorName() != null) {
-                state.setDoctorNombre(aiResponse.getExtractedData().getDoctorName());
+                String doctorExtraido = aiResponse.getExtractedData().getDoctorName().trim();
+                ConversationState.AgendarCitaPhase fase = state.getAgendarCitaPhase();
+                boolean bloquearSobrescrituraDoctor =
+                    fase == ConversationState.AgendarCitaPhase.ESPERANDO_DIA_SEMANA ||
+                    fase == ConversationState.AgendarCitaPhase.ESPERANDO_HORA ||
+                    fase == ConversationState.AgendarCitaPhase.CONFIRMANDO_CITA ||
+                    fase == ConversationState.AgendarCitaPhase.COMPLETADA;
+
+                if (!doctorExtraido.isEmpty() && !bloquearSobrescrituraDoctor) {
+                    state.setDoctorNombre(doctorExtraido);
+                }
             }
             if (aiResponse.getExtractedData().getSpecialty() != null) {
                 state.setEspecialidadBuscada(aiResponse.getExtractedData().getSpecialty());
@@ -798,6 +808,15 @@ public class AzureAiController {
         }
         
         Optional<DoctorEntity> doctorOpt = doctorRepository.findByNombre(state.getDoctorNombre());
+        if (doctorOpt.isEmpty() && state.getDoctorNombre() != null) {
+            String doctorSinPrefijo = state.getDoctorNombre()
+                .replaceFirst("(?i)^dr\\.?\\s+", "")
+                .trim();
+
+            if (!doctorSinPrefijo.isEmpty()) {
+                doctorOpt = doctorRepository.findByNombre(doctorSinPrefijo);
+            }
+        }
         if (doctorOpt.isEmpty()) {
             return "⚠️ El doctor no se encontró en el sistema.";
         }
