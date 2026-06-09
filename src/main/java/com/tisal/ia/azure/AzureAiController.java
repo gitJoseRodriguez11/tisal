@@ -446,7 +446,8 @@ public class AzureAiController {
                 return paso6_ConfirmarYAgendar(state, aiResponse);
                 
             case COMPLETADA:
-                return "✅ Tu cita ya ha sido agendada. ¿Hay algo más en lo que pueda ayudarte?";
+                resetearFlujoAgendamiento(state);
+                return "Perfecto, iniciemos un nuevo agendamiento.\n\n" + paso1_PedirRut(state, aiResponse);
                 
             default:
                 return "⚠️ Error en el flujo de agendamiento.";
@@ -868,9 +869,7 @@ public class AzureAiController {
         }
 
         if (opcion == 2) {
-            state.setConfirmacionPendiente(false);
-            state.setOpcionSeleccionada(null);
-            state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.COMPLETADA);
+            resetearFlujoAgendamiento(state);
             return "❌ Agendamiento cancelado. No se registró ninguna cita.";
         }
 
@@ -888,11 +887,9 @@ public class AzureAiController {
         cita.setFecha(state.getFechaSolicitada().withHour(hora.getHour()).withMinute(hora.getMinute()));
         cita.setEstado("confirmada");
         citaRepository.save(cita);
-        
-        // Marcar como completada
-        state.setConfirmacionPendiente(false);
-        state.setOpcionSeleccionada(null);
-        state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.COMPLETADA);
+
+        // Reiniciar flujo para futuros agendamientos con la misma sesión
+        resetearFlujoAgendamiento(state);
         
         return "✅ ¡Cita agendada exitosamente!\n\n" +
                "📋 Resumen:\n" +
@@ -903,6 +900,26 @@ public class AzureAiController {
                "  Fecha: " + state.getFechaSolicitada().toLocalDate() + "\n" +
                "  Hora: " + hora + "\n\n" +
                "Te enviaremos un recordatorio 24 horas antes de tu cita.";
+    }
+
+    private void resetearFlujoAgendamiento(ConversationState state) {
+        state.setAgendarCitaPhase(ConversationState.AgendarCitaPhase.ESPERANDO_RUT);
+        state.setConfirmacionPendiente(false);
+        state.setOpcionSeleccionada(null);
+
+        // Limpiar datos del flujo para iniciar un nuevo agendamiento desde cero
+        state.setPacienteRut(null);
+        state.setDoctorNombre(null);
+        state.setEspecialidadBuscada(null);
+        state.setSucursalBuscada(null);
+        state.setFechaSolicitada(null);
+        state.setHoraStr(null);
+        state.setSucursalesListadas(null);
+        state.setEspecialidadesListadas(null);
+        state.setDoctoresConDisponibilidad(null);
+        state.setDiasDisponibles(null);
+        state.setDiaSemanaSeleccionado(null);
+        state.setHorasParaDia(null);
     }
     
     /**
