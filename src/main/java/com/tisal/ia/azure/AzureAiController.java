@@ -326,7 +326,10 @@ public class AzureAiController {
                 try {
                     state.setFechaSolicitada(LocalDateTime.parse(aiResponse.getExtractedData().getDate().replace("Z", "")));
                 } catch (Exception e) {
-                    state.setFechaSolicitada(FechaParser.parse(request.getPrompt()));
+                    LocalDateTime parsed = FechaParser.parse(request.getPrompt());
+                    if (parsed != null) {
+                        state.setFechaSolicitada(parsed);
+                    }
                 }
             }
             if (aiResponse.getExtractedData().getTime() != null) {
