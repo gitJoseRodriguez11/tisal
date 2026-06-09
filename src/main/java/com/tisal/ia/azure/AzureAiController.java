@@ -880,7 +880,14 @@ public class AzureAiController {
                    "2. Cancelar";
         }
         
-        // ✅ CREAR CITA
+        // ✅ CREAR CITA — guardar datos en locales ANTES de resetear el estado
+        String resumenPaciente = pacienteOpt.get().getNombre();
+        String resumenDoctor   = doctor.getNombre();
+        String resumenEspecialidad = doctor.getEspecialidad().getNombre();
+        String resumenSucursal = doctor.getSucursal().getNombre();
+        String resumenFecha    = state.getFechaSolicitada().toLocalDate().toString();
+        String resumenHora     = hora.toString();
+
         CitaEntity cita = new CitaEntity();
         cita.setPaciente(pacienteOpt.get());
         cita.setDoctor(doctor);
@@ -890,15 +897,15 @@ public class AzureAiController {
 
         // Reiniciar flujo para futuros agendamientos con la misma sesión
         resetearFlujoAgendamiento(state);
-        
+
         return "✅ ¡Cita agendada exitosamente!\n\n" +
                "📋 Resumen:\n" +
-               "  Paciente: " + pacienteOpt.get().getNombre() + "\n" +
-               "  Doctor: Dr. " + doctor.getNombre() + "\n" +
-               "  Especialidad: " + doctor.getEspecialidad().getNombre() + "\n" +
-               "  Sucursal: " + doctor.getSucursal().getNombre() + "\n" +
-               "  Fecha: " + state.getFechaSolicitada().toLocalDate() + "\n" +
-               "  Hora: " + hora + "\n\n" +
+               "  Paciente: " + resumenPaciente + "\n" +
+               "  Doctor: Dr. " + resumenDoctor + "\n" +
+               "  Especialidad: " + resumenEspecialidad + "\n" +
+               "  Sucursal: " + resumenSucursal + "\n" +
+               "  Fecha: " + resumenFecha + "\n" +
+               "  Hora: " + resumenHora + "\n\n" +
                "Te enviaremos un recordatorio 24 horas antes de tu cita.";
     }
 
