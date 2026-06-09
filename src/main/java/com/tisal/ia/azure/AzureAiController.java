@@ -283,15 +283,18 @@ public class AzureAiController {
             state.setOpcionSeleccionada(opcionSeleccionada);
         }
         
-        // 3. Construir historial de conversación
+        // 3. Construir historial de conversación (RUT enmascarado para no filtrarlo a Azure)
         StringBuilder conversationHistory = new StringBuilder();
         List<ConversacionEntity> historial = conversacionRepository
             .findBySessionIdOrderByTimestampAsc(request.getSessionId());
-        
+
+        Pattern rutPattern = Pattern.compile("(\\d{1,2}\\.\\d{3}\\.\\d{3}-[0-9kK])|(\\d{7,8}-[0-9kK])");
         for (ConversacionEntity c : historial) {
-            conversationHistory.append("Usuario: ").append(c.getMensajeUsuario()).append("\n");
+            String mensajeEnmascarado = rutPattern.matcher(c.getMensajeUsuario()).replaceAll("[RUT PRIVADO]");
+            conversationHistory.append("Usuario: ").append(mensajeEnmascarado).append("\n");
             if (c.getRespuestaIa() != null) {
-                conversationHistory.append("IA: ").append(c.getRespuestaIa()).append("\n");
+                String respuestaEnmascarada = rutPattern.matcher(c.getRespuestaIa()).replaceAll("[RUT PRIVADO]");
+                conversationHistory.append("IA: ").append(respuestaEnmascarada).append("\n");
             }
         }
         
@@ -347,13 +350,27 @@ public class AzureAiController {
             }
         }
         
-        // 7. MÁQUINA DE ESTADOS: Ejecutar acción basada en intención
+        // 7. Interceptar consultas sobre datos personales antes de llegar a la máquina de estados
+        if (esPreguntaSobreDatosPersonales(request.getPrompt())) {
+            String respuestaFinal = "Por seguridad, no comparto datos personales en el chat. " +
+                "Si necesitas agendar una cita, puedo ayudarte con eso.";
+            sessionStates.put(request.getSessionId(), state);
+            ConversacionEntity convPriv = new ConversacionEntity();
+            convPriv.setSessionId(request.getSessionId());
+            convPriv.setMensajeUsuario(request.getPrompt());
+            convPriv.setRespuestaIa(respuestaFinal);
+            convPriv.setTimestamp(LocalDateTime.now());
+            conversacionRepository.save(convPriv);
+            return respuestaFinal;
+        }
+
+        // 8. MÁQUINA DE ESTADOS: Ejecutar acción basada en intención
         String respuestaFinal = manejarIntention(aiResponse, state, request.getSessionId());
         
-        // 8. 🆕 Guardar estado actualizado en memoria (PERSISTE PARA PRÓXIMO TURNO)
+        // 9. 🆕 Guardar estado actualizado en memoria (PERSISTE PARA PRÓXIMO TURNO)
         sessionStates.put(request.getSessionId(), state);
         
-        // 9. Guardar en historial de BD
+        // 10. Guardar en historial de BD
         ConversacionEntity conv = new ConversacionEntity();
         conv.setSessionId(request.getSessionId());
         conv.setMensajeUsuario(request.getPrompt());
@@ -1316,6 +1333,15 @@ public class AzureAiController {
             return Integer.parseInt(matcher.group(1));
         }
         return null;
+    }
+
+    private boolean esPreguntaSobreDatosPersonales(String prompt) {
+        if (prompt == null || prompt.trim().isEmpty()) return false;
+        String lower = prompt.toLowerCase();
+        return (lower.contains("rut") || lower.contains("mi rut") || lower.contains("sabes mi")) &&
+               (lower.contains("sabes") || lower.contains("recuerdas") || lower.contains("tienes") ||
+                lower.contains("cual es") || lower.contains("cuál es") || lower.contains("dime") ||
+                lower.contains("di mi") || lower.contains("mi rut"));
     }
 
 }
